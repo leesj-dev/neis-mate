@@ -480,6 +480,19 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               </Button>
             </div>
           </div>
+
+          {/* Legal */}
+          <div>
+            <h3 className="text-base font-medium mb-2">법적 고지</h3>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => window.open('./privacy-policy.html', '_blank')}
+              >
+                개인정보처리방침
+              </Button>
+            </div>
+          </div>
         </div>
       </DialogContent>
 
