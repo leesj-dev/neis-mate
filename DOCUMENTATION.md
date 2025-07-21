@@ -1,4 +1,4 @@
-# Nice Notes
+# NEIS MATE
 
 A comprehensive memo application built with React, Vite, TypeScript, TailwindCSS, and shadcn/ui. The app supports multiple user modes and integrates with Google Drive for cloud storage.
 

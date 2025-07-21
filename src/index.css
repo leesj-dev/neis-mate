@@ -1,4 +1,40 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* 로컬 폰트 정의 */
+@font-face {
+  font-family: 'Pretendard';
+  font-style: normal;
+  font-weight: 45 920;
+  font-display: swap;
+  src: url('/fonts/PretendardVariable.woff2') format('woff2-variations');
+}
+
+@font-face {
+  font-family: 'NanumSquare Neo';
+  font-style: normal;
+  font-weight: 45 920;
+  font-display: swap;
+  src: url('/fonts/NanumSquareNeo-Variable.woff2') format('woff2-variations');
+}
+
+@font-face {
+  font-family: 'MaruBuri';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/MaruBuri-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'MaruBuri';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/MaruBuri-Bold.woff2') format('woff2');
+}
 
 @theme {
   --color-background: hsl(0 0% 100%);
@@ -79,7 +115,8 @@
 /* 기본 스타일 적용 */
 body {
   @apply bg-background text-foreground;
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'Pretendard', system-ui, sans-serif;
+  font-feature-settings: 'ss05';
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 

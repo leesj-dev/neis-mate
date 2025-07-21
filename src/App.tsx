@@ -1,25 +1,21 @@
+import { GoogleOAuthProvider } from '@react-oauth/google';
 import { ThemeProvider } from '@/components/theme-provider';
 import { AppLayout } from '@/components/app-layout';
-import { OAuthCallback } from '@/components/oauth-callback';
-import './App.css'
 
 function App() {
-  // OAuth 콜백 처리
-  const urlParams = new URLSearchParams(window.location.search);
-  const isOAuthCallback = urlParams.has('code') || urlParams.has('error');
+  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
-  if (isOAuthCallback) {
-    return (
-      <ThemeProvider defaultTheme="system" storageKey="nice-notes-theme">
-        <OAuthCallback />
-      </ThemeProvider>
-    );
+  if (!clientId) {
+    console.error('VITE_GOOGLE_CLIENT_ID is not set');
+    return <div>Google Client ID is not configured</div>;
   }
 
   return (
-    <ThemeProvider defaultTheme="system" storageKey="nice-notes-theme">
-      <AppLayout />
-    </ThemeProvider>
+    <GoogleOAuthProvider clientId={clientId}>
+      <ThemeProvider defaultTheme="system" storageKey="nice-notes-theme">
+        <AppLayout />
+      </ThemeProvider>
+    </GoogleOAuthProvider>
   )
 }
 

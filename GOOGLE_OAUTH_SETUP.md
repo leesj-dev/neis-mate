@@ -11,7 +11,7 @@
 
 ### Step 1: 프로젝트 생성
 1. [Google Cloud Console](https://console.cloud.google.com/) 접속
-2. 새 프로젝트 생성: "Nice Notes App"
+2. 새 프로젝트 생성: "NEIS Mate App"
 3. 프로젝트 선택
 
 ### Step 2: API 활성화
@@ -24,7 +24,7 @@
 1. **APIs & Services** → **Credentials**
 2. **+ CREATE CREDENTIALS** → **OAuth client ID**
 3. **Application type**: Web application
-4. **Name**: Nice Notes Web Client
+4. **Name**: NEIS Mate Web Client
 5. **Authorized JavaScript origins**:
    ```
    http://localhost:5173

@@ -1,8 +1,8 @@
-export type UserMode = '일반' | '학생' | '교사';
+export type UserMode = "일반" | "학생" | "교사";
 
-export type Grade = '초1' | '초2' | '초3' | '초4' | '초5' | '초6' | '중1' | '중2' | '중3' | '고1' | '고2' | '고3';
+export type Grade = "초1" | "초2" | "초3" | "초4" | "초5" | "초6" | "중1" | "중2" | "중3" | "고1" | "고2" | "고3";
 
-export type Year = 2021 | 2022 | 2023 | 2024 | 2025;
+export type Year = 2021 | 2022 | 2023 | 2024 | 2025 | 2026 | 2027 | 2028 | 2029 | 2030;
 
 export interface BaseMemo {
   id: string;
@@ -14,13 +14,13 @@ export interface BaseMemo {
 }
 
 export interface GeneralMemo extends BaseMemo {
-  mode: '일반';
+  mode: "일반";
   title: string;
   folderId?: string;
 }
 
 export interface StudentMemo extends BaseMemo {
-  mode: '학생';
+  mode: "학생";
   grade: Grade;
   subject: string;
   internalTitle: string; // grade-subject-version
@@ -28,7 +28,7 @@ export interface StudentMemo extends BaseMemo {
 }
 
 export interface TeacherMemo extends BaseMemo {
-  mode: '교사';
+  mode: "교사";
   year: Year;
   grade: Grade;
   subject: string;
@@ -57,7 +57,7 @@ export interface User {
   googleId?: string;
 }
 
-export type SortOption = 'alphabetical' | 'recently-modified' | 'recently-created' | 'recently-viewed';
+export type SortOption = "alphabetical" | "recently-modified" | "recently-created" | "recently-viewed";
 
 export interface WordCount {
   words: number;
