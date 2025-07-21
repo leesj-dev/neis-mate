@@ -2,14 +2,14 @@ import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useTheme } from "@/components/theme-provider";
 import { useAppStore } from "@/store";
 import { downloadAllMemos } from "@/lib/download-utils";
 import { getYears } from "@/lib/year-utils";
 import { GoogleDriveService } from "@/lib/google-drive";
 import { ModeChangeDialog } from "@/components/mode-change-dialog";
-import { Monitor, Moon, Sun, FolderOpen, Edit } from "lucide-react";
+import { Monitor, Moon, Sun, FolderOpen, Edit, RefreshCw } from "lucide-react";
 import type { UserMode, Grade, Year } from "@/types";
 
 interface SettingsModalProps {
@@ -24,13 +24,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     folders, 
     setUser, 
     setMemos, 
-    setFolders, 
     autoSaveInterval, 
     setAutoSaveInterval,
     googleDriveFolderId,
     googleDriveFolderName,
     setGoogleDriveFolderId,
-    setGoogleDriveFolderName
+    setGoogleDriveFolderName,
+    clearAllData
   } = useAppStore();
   const { theme, setTheme } = useTheme();
   const [isDownloading, setIsDownloading] = useState(false);
@@ -38,40 +38,63 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [targetMode, setTargetMode] = useState<UserMode>("일반");
   const [googleDriveFolders, setGoogleDriveFolders] = useState<Array<{id: string, name: string}>>([]);
   const [isLoadingFolders, setIsLoadingFolders] = useState(false);
+  const [folderLoadError, setFolderLoadError] = useState<string | null>(null);
   const [isEditingFolderName, setIsEditingFolderName] = useState(false);
   const [newFolderName, setNewFolderName] = useState(googleDriveFolderName);
   const [isRenamingFolder, setIsRenamingFolder] = useState(false);
+  const [isResetInProgress, setIsResetInProgress] = useState(false);
 
   // 구글 드라이브 폴더 목록 로드
   const loadGoogleDriveFolders = useCallback(async () => {
     if (!user?.isLoggedIn) return;
     
     setIsLoadingFolders(true);
+    setFolderLoadError(null);
     try {
       const googleDrive = GoogleDriveService.getInstance();
-      if (googleDrive.isAuthenticated()) {
-        // 폴더 확인/생성
-        const folderId = await googleDrive.ensureNeisMateFolder();
-        
-        // 현재 폴더의 실제 이름 가져오기
-        const folderInfo = await googleDrive.getFolderInfo(folderId);
-        const actualFolderName = folderInfo.name;
-        
-        const folders = [{ id: folderId, name: actualFolderName }];
-        setGoogleDriveFolders(folders);
-        
-        // 폴더 ID가 설정되지 않았으면 설정
-        if (!googleDriveFolderId) {
-          setGoogleDriveFolderId(folderId);
-        }
-        
-        // 폴더 이름이 변경되었으면 업데이트
-        if (actualFolderName !== googleDriveFolderName) {
-          setGoogleDriveFolderName(actualFolderName);
-        }
+      
+      // 토큰 유효성 재확인 (내부적으로 loadTokensFromStorage 호출됨)
+      if (!(await googleDrive.isAuthenticated())) {
+        throw new Error("Google Drive 인증이 만료되었습니다. 다시 로그인해주세요.");
+      }
+      
+      // 폴더 확인/생성
+      const folderId = await googleDrive.ensureNeisMateFolder();
+      
+      // 현재 폴더의 실제 이름 가져오기
+      const folderInfo = await googleDrive.getFolderInfo(folderId);
+      const actualFolderName = folderInfo.name;
+      
+      const folders = [{ id: folderId, name: actualFolderName }];
+      setGoogleDriveFolders(folders);
+      
+      // 폴더 ID가 설정되지 않았으면 설정
+      if (!googleDriveFolderId) {
+        setGoogleDriveFolderId(folderId);
+      }
+      
+      // 폴더 이름이 변경되었으면 업데이트
+      if (actualFolderName !== googleDriveFolderName) {
+        setGoogleDriveFolderName(actualFolderName);
       }
     } catch (error) {
       console.error('Failed to load Google Drive folders:', error);
+      let errorMessage = 'Google Drive 폴더를 로드하는 중 오류가 발생했습니다';
+      
+      if (error instanceof Error) {
+        if (error.message.includes('인증') || error.message.includes('401') || error.message.includes('Unauthorized')) {
+          errorMessage = 'Google Drive 인증이 만료되었습니다. 다시 로그인해주세요.';
+        } else if (error.message.includes('403') || error.message.includes('Forbidden')) {
+          errorMessage = 'Google Drive 접근 권한이 없습니다. 권한을 확인해주세요.';
+        } else if (error.message.includes('네트워크') || error.message.includes('network') || error.message.includes('fetch')) {
+          errorMessage = '네트워크 연결을 확인해주세요.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
+      setFolderLoadError(errorMessage);
+      setGoogleDriveFolders([]);
     } finally {
       setIsLoadingFolders(false);
     }
@@ -79,9 +102,28 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   useEffect(() => {
     if (isOpen && user?.isLoggedIn) {
+      // 모달이 열릴 때마다 상태 초기화
+      setFolderLoadError(null);
+      setGoogleDriveFolders([]);
       loadGoogleDriveFolders();
     }
   }, [isOpen, user?.isLoggedIn, loadGoogleDriveFolders]);
+
+  // 브라우저 창 닫기 방지 (초기화 진행 중일 때)
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isResetInProgress) {
+        e.preventDefault();
+      }
+    };
+
+    if (isResetInProgress) {
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      return () => {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+      };
+    }
+  }, [isResetInProgress]);
 
   // 폴더 이름 변경
   const handleRenameFolderName = async () => {
@@ -90,7 +132,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setIsRenamingFolder(true);
     try {
       const googleDrive = GoogleDriveService.getInstance();
-      if (googleDrive.isAuthenticated()) {
+      if (await googleDrive.isAuthenticated()) {
         await googleDrive.renameFolder(googleDriveFolderId, newFolderName.trim());
         setGoogleDriveFolderName(newFolderName.trim());
         setIsEditingFolderName(false);
@@ -266,20 +308,36 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setIsDownloading(false);
   };
 
-  const handleReset = () => {
+  const handleReset = async () => {
     if (confirm("정말로 모든 데이터를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.")) {
-      setMemos([]);
-      setFolders([]);
-      onClose();
+      setIsResetInProgress(true);
+      try {
+        console.log("Starting complete data reset...");
+        await clearAllData();
+        console.log("Data reset completed successfully");
+        onClose();
+      } catch (error) {
+        console.error("Failed to reset data:", error);
+        alert("데이터 초기화 중 오류가 발생했습니다. 다시 시도해주세요.");
+      } finally {
+        setIsResetInProgress(false);
+      }
     }
   };
 
+  const handleModalClose = () => {
+    if (isResetInProgress) {
+      alert("데이터 초기화가 진행 중입니다. 초기화가 완료될 때까지 창을 닫을 수 없습니다.");
+      return;
+    }
+    onClose();
+  };
+
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[500px]">
+    <Dialog open={isOpen} onOpenChange={(open) => !open && handleModalClose()}>
+      <DialogContent className=" rounded-lg max-w-[calc(100vw-3rem)] max-h-[calc(100vh-3rem)] overflow-y-auto md:w-auto md:h-auto md:max-w-[500px] md:m-0">
         <DialogHeader>
           <DialogTitle>설정</DialogTitle>
-          <DialogDescription>앱 설정을 관리하고 데이터를 내보내거나 초기화할 수 있습니다.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6 py-4">
@@ -389,37 +447,65 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex gap-2">
-                    <Select 
-                      value={googleDriveFolderId || ""} 
-                      onValueChange={setGoogleDriveFolderId}
-                      disabled={isLoadingFolders}
-                    >
-                      <SelectTrigger className="w-50 h-9">
-                        <SelectValue placeholder="폴더를 선택하세요" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {googleDriveFolders.map((folder) => (
-                          <SelectItem key={folder.id} value={folder.id}>
-                            <div className="flex items-center gap-2">
-                              <FolderOpen className="h-4 w-4" />
-                              {folder.name}
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={() => {
-                        setNewFolderName(googleDriveFolderName);
-                        setIsEditingFolderName(true);
-                      }}
-                      disabled={isLoadingFolders || !googleDriveFolderId}
-                    >
-                      <Edit className="h-4 w-4" />
-                    </Button>
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <Select 
+                        value={googleDriveFolderId || ""} 
+                        onValueChange={setGoogleDriveFolderId}
+                        disabled={isLoadingFolders}
+                      >
+                        <SelectTrigger className="w-50 h-9">
+                          <SelectValue placeholder={
+                            isLoadingFolders ? "로딩 중..." : 
+                            folderLoadError ? "오류 발생" :
+                            googleDriveFolders.length === 0 ? "폴더를 불러올 수 없음" :
+                            "폴더를 선택하세요"
+                          } />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {googleDriveFolders.map((folder) => (
+                            <SelectItem key={folder.id} value={folder.id}>
+                              <div className="flex items-center gap-2">
+                                <FolderOpen className="h-4 w-4" />
+                                {folder.name}
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => {
+                          setNewFolderName(googleDriveFolderName);
+                          setIsEditingFolderName(true);
+                        }}
+                        disabled={isLoadingFolders || !googleDriveFolderId}
+                      >
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      {(folderLoadError || (googleDriveFolders.length === 0 && !isLoadingFolders)) && (
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={loadGoogleDriveFolders}
+                          disabled={isLoadingFolders}
+                          className="px-2"
+                        >
+                          <RefreshCw className={`h-4 w-4 ${isLoadingFolders ? 'animate-spin' : ''}`} />
+                        </Button>
+                      )}
+                    </div>
+                    {folderLoadError && (
+                      <div className="text-sm text-red-500">
+                        {folderLoadError}
+                      </div>
+                    )}
+                    {isLoadingFolders && (
+                      <div className="text-sm text-muted-foreground">
+                        Google Drive 폴더를 확인하는 중...
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -475,8 +561,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 {isDownloading ? "다운로드 중..." : "전체 노트 다운로드"}
               </Button>
 
-              <Button variant="destructive" onClick={handleReset}>
-                모든 데이터 초기화
+              <Button 
+                variant="destructive" 
+                onClick={handleReset}
+                disabled={isResetInProgress}
+              >
+                {isResetInProgress ? "초기화 중..." : "모든 데이터 초기화"}
               </Button>
             </div>
           </div>

@@ -27,6 +27,7 @@ interface AppState {
   currentFolderId: string | null;
   setFolders: (folders: Folder[]) => void;
   addFolder: (folder: Folder) => void;
+  updateFolder: (id: string, updates: Partial<Folder>) => void;
   deleteFolder: (id: string) => void;
   setCurrentFolderId: (id: string | null) => void;
 
@@ -73,6 +74,7 @@ interface AppState {
   setGoogleDriveFolderName: (name: string) => void;
   setGoogleDriveLoaded: (loaded: boolean) => void;
   loadMemosFromDrive: () => Promise<void>;
+  clearAllData: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>()(
@@ -123,12 +125,14 @@ export const useAppStore = create<AppState>()(
           // Auto-save to Google Drive if user is logged in
           if (state.user?.isLoggedIn) {
             const googleDrive = GoogleDriveService.getInstance();
-            if (googleDrive.isAuthenticated()) {
-              console.log("Auto-saving new memo to Google Drive:", memo.id);
-              GoogleDriveService.saveMemo(memo, state.googleDriveFolderId || undefined, state.folders).catch(console.error);
-            } else {
-              console.log("Google Drive not authenticated, skipping auto-save");
-            }
+            googleDrive.isAuthenticated().then(isAuth => {
+              if (isAuth) {
+                console.log("Auto-saving new memo to Google Drive:", memo.id);
+                GoogleDriveService.saveMemo(memo, state.googleDriveFolderId || undefined, state.folders).catch(console.error);
+              } else {
+                console.log("Google Drive not authenticated, skipping auto-save");
+              }
+            });
           }
 
           return { memos: [...state.memos, memo] };
@@ -137,18 +141,51 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           const updatedMemos = state.memos.map((memo) => {
             if (memo.id === id) {
+              const originalMemo = memo;
               // Type-safe memo updating
               const updatedMemo = { ...memo, ...updates, modifiedAt: new Date() } as Memo;
 
               // Auto-save to Google Drive if user is logged in
               if (state.user?.isLoggedIn) {
                 const googleDrive = GoogleDriveService.getInstance();
-                if (googleDrive.isAuthenticated()) {
-                  console.log("Auto-saving memo to Google Drive:", updatedMemo.id);
-                  GoogleDriveService.saveMemo(updatedMemo, state.googleDriveFolderId || undefined, state.folders).catch(console.error);
-                } else {
-                  console.log("Google Drive not authenticated, skipping auto-save");
-                }
+                googleDrive.isAuthenticated().then(isAuth => {
+                  if (isAuth) {
+                    // Check if title or folderId changed (requires deletion of old file)
+                    let titleChanged = false;
+                    let folderChanged = false;
+
+                    if (originalMemo.mode === "일반") {
+                      const generalMemo = originalMemo as import("@/types").GeneralMemo;
+                      const generalUpdates = updates as Partial<import("@/types").GeneralMemo>;
+                      titleChanged = 'title' in updates && generalUpdates.title !== generalMemo.title;
+                      folderChanged = 'folderId' in updates && generalUpdates.folderId !== generalMemo.folderId;
+                    } else {
+                      const nonGeneralMemo = originalMemo as import("@/types").StudentMemo | import("@/types").TeacherMemo;
+                      const nonGeneralUpdates = updates as Partial<import("@/types").StudentMemo | import("@/types").TeacherMemo>;
+                      titleChanged = 'displayTitle' in updates && nonGeneralUpdates.displayTitle !== nonGeneralMemo.displayTitle;
+                    }
+
+                    if (titleChanged || folderChanged) {
+                      console.log("Title or folder changed, deleting old file from Google Drive:", originalMemo.id);
+                      // Delete the old file first, then save the new one
+                      GoogleDriveService.deleteMemo(originalMemo)
+                        .then(() => {
+                          console.log("Old file deleted, saving updated memo to Google Drive:", updatedMemo.id);
+                          return GoogleDriveService.saveMemo(updatedMemo, state.googleDriveFolderId || undefined, state.folders);
+                        })
+                        .catch(error => {
+                          console.error("Failed to delete old memo file from Google Drive:", error);
+                          // Still try to save the updated memo even if deletion failed
+                          GoogleDriveService.saveMemo(updatedMemo, state.googleDriveFolderId || undefined, state.folders).catch(console.error);
+                        });
+                    } else {
+                      console.log("Auto-saving memo to Google Drive:", updatedMemo.id);
+                      GoogleDriveService.saveMemo(updatedMemo, state.googleDriveFolderId || undefined, state.folders).catch(console.error);
+                    }
+                  } else {
+                    console.log("Google Drive not authenticated, skipping auto-save");
+                  }
+                });
               }
 
               return updatedMemo;
@@ -166,35 +203,38 @@ export const useAppStore = create<AppState>()(
             return state; // 메모를 찾을 수 없으면 상태 변경 없음
           }
 
-          // Auto-delete from Google Drive if user is logged in
-          if (state.user?.isLoggedIn) {
-            const googleDrive = GoogleDriveService.getInstance();
-            if (googleDrive.isAuthenticated()) {
-              console.log("Auto-deleting memo from Google Drive:", memoToDelete.id);
-              GoogleDriveService.deleteMemo(memoToDelete).catch(console.error);
-            } else {
-              console.log("Google Drive not authenticated, skipping auto-delete");
-            }
-          }
-
-          // 버전 번호 재정렬
+          // 먼저 로컬에서 메모 삭제 및 버전 재정렬
           const memosAfterDeletion = state.memos.filter((memo) => memo.id !== id);
           const reorderedMemos = reorderVersionNumbers(memoToDelete, memosAfterDeletion);
 
-          // 변경된 메모들을 Google Drive에 저장
+          // Google Drive에서 삭제 (비동기로 처리하되 실패해도 로컬 상태는 유지)
           if (state.user?.isLoggedIn) {
             const googleDrive = GoogleDriveService.getInstance();
-            if (googleDrive.isAuthenticated()) {
-              // 버전 번호가 변경된 메모들만 다시 저장
-              const originalMemos = memosAfterDeletion;
-              reorderedMemos.forEach((memo: Memo) => {
-                const originalMemo = originalMemos.find(m => m.id === memo.id);
-                if (originalMemo && originalMemo.version !== memo.version) {
-                  console.log(`Auto-updating reordered memo ${memo.id} (version ${originalMemo.version} -> ${memo.version})`);
-                  GoogleDriveService.saveMemo(memo, state.googleDriveFolderId || undefined, state.folders).catch(console.error);
-                }
-              });
-            }
+            googleDrive.isAuthenticated().then(isAuth => {
+              if (isAuth) {
+                console.log("Auto-deleting memo from Google Drive:", memoToDelete.id);
+                GoogleDriveService.deleteMemo(memoToDelete)
+                  .then(() => {
+                    console.log("Successfully deleted memo from Google Drive:", memoToDelete.id);
+                  })
+                  .catch(error => {
+                    console.error("Failed to delete memo from Google Drive:", memoToDelete.id, error);
+                    // Google Drive 삭제 실패해도 로컬 상태는 유지
+                  });
+                
+                // 버전 번호가 변경된 메모들을 Google Drive에 저장
+                const originalMemos = memosAfterDeletion;
+                reorderedMemos.forEach((memo: Memo) => {
+                  const originalMemo = originalMemos.find(m => m.id === memo.id);
+                  if (originalMemo && originalMemo.version !== memo.version) {
+                    console.log(`Auto-updating reordered memo ${memo.id} (version ${originalMemo.version} -> ${memo.version})`);
+                    GoogleDriveService.saveMemo(memo, state.googleDriveFolderId || undefined, state.folders).catch(console.error);
+                  }
+                });
+              } else {
+                console.log("Google Drive not authenticated, skipping auto-delete");
+              }
+            });
           }
 
           return {
@@ -219,13 +259,99 @@ export const useAppStore = create<AppState>()(
       // Folders state
       folders: [],
       currentFolderId: null,
-      setFolders: (folders) => set({ folders }),
+      setFolders: (folders) => {
+        set((state) => {
+          // Google Drive에 폴더 변경사항 동기화
+          if (state.user?.isLoggedIn) {
+            const googleDrive = GoogleDriveService.getInstance();
+            googleDrive.isAuthenticated().then(isAuth => {
+              if (isAuth) {
+                console.log("Syncing folder changes to Google Drive");
+                // 폴더 변경으로 인해 메모들의 위치가 바뀔 수 있으므로 모든 메모를 다시 저장
+                state.memos.forEach(memo => {
+                  if (memo.mode === "일반") {
+                    GoogleDriveService.saveMemo(memo, state.googleDriveFolderId || undefined, folders).catch(console.error);
+                  }
+                });
+              }
+            });
+          }
+          return { folders };
+        });
+      },
       addFolder: (folder) =>
         set((state) => {
           console.log("Store에 폴더 추가:", folder);
           return { folders: [...state.folders, folder] };
         }),
-      deleteFolder: (id) => set((state) => ({ folders: state.folders.filter((f) => f.id !== id) })),
+      updateFolder: (id: string, updates: Partial<Folder>) =>
+        set((state) => {
+          console.log("Store에 폴더 업데이트:", id, updates);
+          return { 
+            folders: state.folders.map(f => 
+              f.id === id ? { ...f, ...updates } : f
+            )
+          };
+        }),
+      deleteFolder: (id) => {
+        set((state) => {
+          const folderToDelete = state.folders.find(f => f.id === id);
+          
+          // Google Drive에서 폴더 삭제
+          if (state.user?.isLoggedIn && folderToDelete?.googleDriveId) {
+            const googleDrive = GoogleDriveService.getInstance();
+            googleDrive.isAuthenticated().then(isAuth => {
+              if (isAuth && folderToDelete.googleDriveId) {
+                console.log("Deleting folder from Google Drive:", folderToDelete.googleDriveId);
+                googleDrive.deleteFolder(folderToDelete.googleDriveId).catch(error => {
+                  console.error("Failed to delete folder from Google Drive:", folderToDelete.googleDriveId, error);
+                });
+              }
+            });
+          }
+
+          // 해당 폴더에 있는 모든 메모들을 Google Drive에서 삭제
+          if (state.user?.isLoggedIn) {
+            const googleDrive = GoogleDriveService.getInstance();
+            googleDrive.isAuthenticated().then(isAuth => {
+              if (isAuth) {
+                const memosInFolder = state.memos.filter(memo => 
+                  memo.mode === "일반" && (memo as import("@/types").GeneralMemo).folderId === id
+                );
+                console.log(`Deleting ${memosInFolder.length} memos from Google Drive (folder deletion)`);
+                memosInFolder.forEach(memo => {
+                  GoogleDriveService.deleteMemo(memo).catch(error => {
+                    console.error("Failed to delete memo from Google Drive during folder deletion:", memo.id, error);
+                  });
+                });
+              }
+            });
+          }
+          
+          // 해당 폴더에 있는 메모들의 folderId를 null로 변경 (루트로 이동)
+          const updatedMemos = state.memos.map(memo => {
+            if (memo.mode === "일반" && (memo as import("@/types").GeneralMemo).folderId === id) {
+              const updatedMemo = { ...memo, folderId: undefined } as import("@/types").GeneralMemo;
+              // Google Drive에 업데이트된 메모 저장 (새 위치에)
+              if (state.user?.isLoggedIn) {
+                const googleDrive = GoogleDriveService.getInstance();
+                googleDrive.isAuthenticated().then(isAuth => {
+                  if (isAuth) {
+                    GoogleDriveService.saveMemo(updatedMemo, state.googleDriveFolderId || undefined, state.folders.filter(f => f.id !== id)).catch(console.error);
+                  }
+                });
+              }
+              return updatedMemo;
+            }
+            return memo;
+          });
+
+          return { 
+            folders: state.folders.filter((f) => f.id !== id),
+            memos: updatedMemos
+          };
+        });
+      },
       setCurrentFolderId: (id) => set({ currentFolderId: id }),
 
       // Preserved mode attributes
@@ -279,21 +405,70 @@ export const useAppStore = create<AppState>()(
         if (memosFromDrive.length > 0) {
           console.log("Store: Loaded memos from Google Drive:", memosFromDrive.length);
           
-          // Replace existing memos with Google Drive memos and mark as loaded
-          // Google Drive is the source of truth, so we completely replace local memos
+          // 기존 로컬 메모와 Drive 메모를 병합 (ID로 중복 제거)
+          const existingMemoIds = new Set(state.memos.map(memo => memo.id));
+          const newMemosFromDrive = memosFromDrive.filter(memo => !existingMemoIds.has(memo.id));
+          
+          // Drive 메모가 더 최신인 경우 업데이트
+          const updatedMemos = state.memos.map(localMemo => {
+            const driveVersion = memosFromDrive.find(driveMemo => driveMemo.id === localMemo.id);
+            if (driveVersion && new Date(driveVersion.modifiedAt) > new Date(localMemo.modifiedAt)) {
+              console.log(`Updating local memo ${localMemo.id} with newer version from Drive`);
+              return driveVersion;
+            }
+            return localMemo;
+          });
+          
+          // 새로운 Drive 메모들 추가
+          const finalMemos = [...updatedMemos, ...newMemosFromDrive];
+          
           set({ 
-            memos: memosFromDrive,
+            memos: finalMemos,
             googleDriveLoaded: true
           });
           
-          console.log("Store: Updated memo count after loading:", memosFromDrive.length);
+          console.log("Store: Merged memo count after loading:", finalMemos.length);
+          console.log("Store: New memos from Drive:", newMemosFromDrive.length);
+          console.log("Store: Updated existing memos:", finalMemos.length - state.memos.length - newMemosFromDrive.length);
         } else if (!state.googleDriveLoaded) {
           // If no memos and not yet loaded, still mark as loaded to prevent retries
-          console.log("Store: No memos found, marking as loaded");
+          console.log("Store: No memos found or loading was skipped, marking as loaded");
           set({ googleDriveLoaded: true });
-        } else {
-          console.log("Store: Empty result from duplicate request, ignoring");
         }
+      },
+      clearAllData: async () => {
+        const state = get();
+        
+        if (state.user?.isLoggedIn) {
+          try {
+            console.log("Store: Clearing all data from Google Drive...");
+            await GoogleDriveService.clearAllData();
+            console.log("Store: Successfully cleared all data from Google Drive");
+          } catch (error) {
+            console.error("Store: Failed to clear data from Google Drive:", error);
+            // Continue with local clearing even if Google Drive clearing fails
+          }
+        }
+        
+        // Clear all local data
+        console.log("Store: Clearing all local data...");
+        set({
+          memos: [],
+          folders: [],
+          currentMemoId: null,
+          currentFolderId: null,
+          googleDriveLoaded: false,
+          localMemo: "",
+          preservedAttributes: {},
+          isDraft: false,
+          lastSavedAt: null,
+          isAutoSaved: false,
+        });
+        
+        // Reset Google Drive loading states
+        GoogleDriveService.resetLoadingStates();
+        
+        console.log("Store: All data cleared successfully");
       },
     }),
     {

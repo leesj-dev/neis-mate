@@ -44,6 +44,7 @@ export interface Folder {
   name: string;
   parentId?: string;
   createdAt: Date;
+  googleDriveId?: string;
 }
 
 export interface User {

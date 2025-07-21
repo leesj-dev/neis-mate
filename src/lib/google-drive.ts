@@ -61,8 +61,19 @@ export class GoogleDriveService {
       ],
     };
 
-    // 페이지 로드 시 저장된 토큰 복원
-    this.loadTokensFromStorage();
+    // 페이지 로드 시 저장된 토큰 복원 (동기적으로만)
+    this.loadTokensFromStorageSync();
+  }
+
+  private loadTokensFromStorageSync(): void {
+    const accessToken = localStorage.getItem("google_access_token");
+    const expiry = localStorage.getItem("google_token_expiry");
+
+    if (accessToken && expiry) {
+      this.accessToken = accessToken;
+      this.tokenExpiry = parseInt(expiry);
+      // constructor에서는 토큰 만료 확인만 하고 갱신은 하지 않음
+    }
   }
 
   static getInstance(): GoogleDriveService {
@@ -86,7 +97,47 @@ export class GoogleDriveService {
     this.tokenExpiry = expiry;
   }
 
-  private loadTokensFromStorage(): void {
+  private async refreshAccessToken(): Promise<boolean> {
+    const refreshToken = localStorage.getItem("google_refresh_token");
+    if (!refreshToken) {
+      return false;
+    }
+
+    try {
+      const response = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          client_id: this.config.clientId,
+          refresh_token: refreshToken,
+          grant_type: "refresh_token",
+        }),
+      });
+
+      if (!response.ok) {
+        console.error("Failed to refresh token:", response.status, response.statusText);
+        return false;
+      }
+
+      const tokens: GoogleTokenResponse = await response.json();
+      
+      // 새로운 refresh token이 있으면 업데이트, 없으면 기존 것 유지
+      if (!tokens.refresh_token) {
+        tokens.refresh_token = refreshToken;
+      }
+      
+      this.saveTokensToStorage(tokens);
+      console.log("Access token refreshed successfully");
+      return true;
+    } catch (error) {
+      console.error("Token refresh failed:", error);
+      return false;
+    }
+  }
+
+  private async loadTokensFromStorage(): Promise<void> {
     const accessToken = localStorage.getItem("google_access_token");
     const expiry = localStorage.getItem("google_token_expiry");
 
@@ -96,7 +147,12 @@ export class GoogleDriveService {
 
       // 토큰이 만료되었는지 확인
       if (Date.now() >= this.tokenExpiry) {
-        this.clearTokens();
+        console.log("Access token expired, attempting to refresh...");
+        const refreshed = await this.refreshAccessToken();
+        if (!refreshed) {
+          console.log("Token refresh failed, clearing all tokens");
+          this.clearTokens();
+        }
       }
     }
   }
@@ -133,7 +189,7 @@ export class GoogleDriveService {
       }
 
       // 이미 유효한 토큰이 있는지 확인
-      if (this.isAuthenticated()) {
+      if (await this.isAuthenticated()) {
         return true;
       }
 
@@ -144,14 +200,19 @@ export class GoogleDriveService {
     }
   }
 
-  isAuthenticated(): boolean {
+  async isAuthenticated(): Promise<boolean> {
     // 먼저 저장된 토큰 확인
     if (this.accessToken && this.tokenExpiry && Date.now() < this.tokenExpiry) {
       return true;
     }
     
-    // 로컬 스토리지에서 토큰 다시 로드 시도
-    this.loadTokensFromStorage();
+    // 로컬 스토리지에서 토큰 다시 로드 및 갱신 시도
+    await this.loadTokensFromStorage();
+    return !!(this.accessToken && this.tokenExpiry && Date.now() < this.tokenExpiry);
+  }
+
+  // 동기적으로 현재 토큰 상태만 확인 (빠른 체크용)
+  isCurrentlyAuthenticated(): boolean {
     return !!(this.accessToken && this.tokenExpiry && Date.now() < this.tokenExpiry);
   }
 
@@ -201,15 +262,34 @@ export class GoogleDriveService {
     }
   }
 
+  // 유효한 access token을 반환하거나 갱신 시도
+  private async getValidAccessToken(): Promise<string | null> {
+    // 현재 토큰이 유효한지 확인
+    if (this.accessToken && this.tokenExpiry && Date.now() < this.tokenExpiry) {
+      return this.accessToken;
+    }
+
+    // 토큰이 만료되었으면 갱신 시도
+    console.log("Access token expired, attempting to refresh...");
+    const refreshed = await this.refreshAccessToken();
+    
+    if (refreshed && this.accessToken) {
+      return this.accessToken;
+    }
+
+    return null;
+  }
+
   async getUserInfo(): Promise<GoogleUserInfo | null> {
-    if (!this.isAuthenticated()) {
+    const token = await this.getValidAccessToken();
+    if (!token) {
       return null;
     }
 
     try {
       const response = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
         headers: {
-          Authorization: `Bearer ${this.accessToken}`,
+          Authorization: `Bearer ${token}`,
         },
       });
 
@@ -247,6 +327,12 @@ export class GoogleDriveService {
     GoogleDriveService.isLoading = false;
     GoogleDriveService.hasLoaded = false;
     console.log("GoogleDrive: Loading states reset");
+  }
+
+  // Force reload - 강제로 다시 로딩 (디버깅이나 새로고침용)
+  static forceReload(): void {
+    console.log("GoogleDrive: Forcing reload by resetting loading states");
+    GoogleDriveService.resetLoadingStates();
   }
 
   async listFiles(folderId?: string): Promise<GoogleDriveFile[]> {
@@ -372,7 +458,8 @@ export class GoogleDriveService {
   }
 
   async createFolder(name: string, parentId?: string): Promise<GoogleDriveFile> {
-    if (!this.accessToken) {
+    const token = await this.getValidAccessToken();
+    if (!token) {
       throw new Error("Not authenticated");
     }
 
@@ -388,7 +475,7 @@ export class GoogleDriveService {
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${this.accessToken}`,
+            Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify(metadata),
@@ -447,7 +534,17 @@ export class GoogleDriveService {
       );
 
       if (!response.ok) {
-        throw new Error("Failed to get folder info");
+        const errorText = await response.text();
+        console.error("Google Drive API error:", response.status, errorText);
+        if (response.status === 401) {
+          throw new Error("Unauthorized: Google Drive 인증이 만료되었습니다");
+        } else if (response.status === 403) {
+          throw new Error("Forbidden: Google Drive 접근 권한이 없습니다");
+        } else if (response.status === 404) {
+          throw new Error("폴더를 찾을 수 없습니다");
+        } else {
+          throw new Error(`Failed to get folder info: ${response.status}`);
+        }
       }
 
       return await response.json();
@@ -457,7 +554,7 @@ export class GoogleDriveService {
     }
   }
 
-  // 폴더 이름 변경
+  // 폴더 이름 변경 (기존 폴더 삭제하고 새 폴더 생성)
   async renameFolder(folderId: string, newName: string): Promise<GoogleDriveFile> {
     if (!this.accessToken) {
       throw new Error("Not authenticated");
@@ -493,9 +590,73 @@ export class GoogleDriveService {
     }
   }
 
+  // 폴더 삭제
+  async deleteFolder(folderId: string): Promise<void> {
+    if (!this.accessToken) {
+      throw new Error("Not authenticated");
+    }
+
+    try {
+      const response = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${folderId}`,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${this.accessToken}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to delete folder");
+      }
+
+      console.log('Successfully deleted folder:', folderId);
+    } catch (error) {
+      console.error("Failed to delete folder:", error);
+      throw error;
+    }
+  }
+
+  // 임시 폴더를 Google Drive에 즉시 생성
+  async createTempFolder(parentFolderId: string, folderName: string = "새 폴더"): Promise<GoogleDriveFile> {
+    if (!this.accessToken) {
+      throw new Error("Not authenticated");
+    }
+
+    try {
+      const metadata = {
+        name: folderName,
+        mimeType: "application/vnd.google-apps.folder",
+        parents: [parentFolderId],
+      };
+
+      const response = await fetch("https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,parents,createdTime,modifiedTime", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(metadata),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to create temp folder");
+      }
+
+      const result = await response.json();
+      console.log('Successfully created temp folder:', result);
+      return result;
+    } catch (error) {
+      console.error("Failed to create temp folder:", error);
+      throw error;
+    }
+  }
+
   // NEIS Mate 폴더 생성 또는 찾기 (전체 드라이브에서 검색)
   async ensureNeisMateFolder(): Promise<string> {
-    if (!this.accessToken) {
+    const token = await this.getValidAccessToken();
+    if (!token) {
       throw new Error("Not authenticated");
     }
 
@@ -506,13 +667,23 @@ export class GoogleDriveService {
         `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,parents)`,
         {
           headers: {
-            Authorization: `Bearer ${this.accessToken}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
 
       if (!response.ok) {
-        throw new Error("Failed to search for NEIS Mate folder");
+        const errorText = await response.text();
+        console.error("Google Drive API error:", response.status, errorText);
+        if (response.status === 401) {
+          // 토큰 만료 - 로컬 스토리지 클리어
+          this.clearTokens();
+          throw new Error("Unauthorized: Google Drive 인증이 만료되었습니다. 다시 로그인해주세요.");
+        } else if (response.status === 403) {
+          throw new Error("Forbidden: Google Drive 접근 권한이 없습니다");
+        } else {
+          throw new Error(`Failed to search for NEIS Mate folder: ${response.status}`);
+        }
       }
 
       const data = await response.json();
@@ -538,7 +709,8 @@ export class GoogleDriveService {
 
   // 지정된 폴더 내에서 파일들 검색
   async searchMemoFiles(query: string, folderId?: string): Promise<GoogleDriveFile[]> {
-    if (!this.accessToken) {
+    const token = await this.getValidAccessToken();
+    if (!token) {
       throw new Error("Not authenticated");
     }
 
@@ -554,7 +726,7 @@ export class GoogleDriveService {
         )}&fields=files(id,name,mimeType,parents,createdTime,modifiedTime,size)`,
         {
           headers: {
-            Authorization: `Bearer ${this.accessToken}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -632,6 +804,12 @@ export class GoogleDriveService {
       throw new Error("Not authenticated");
     }
 
+    // 토큰 만료 확인
+    if (this.tokenExpiry && Date.now() >= this.tokenExpiry) {
+      console.error("Google Drive token has expired");
+      throw new Error("Token expired - please re-authenticate");
+    }
+
     try {
       // 부모 폴더 내에서 해당 이름의 폴더 검색
       const query = `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and '${parentFolderId}' in parents and trashed=false`;
@@ -645,7 +823,18 @@ export class GoogleDriveService {
       );
 
       if (!response.ok) {
-        throw new Error("Failed to search for subfolder");
+        const errorText = await response.text();
+        console.error("Google Drive API error:", response.status, errorText);
+        
+        if (response.status === 401) {
+          // 토큰 만료 - 로컬 스토리지 클리어
+          this.clearTokens();
+          throw new Error("Unauthorized: Google Drive 인증이 만료되었습니다. 다시 로그인해주세요.");
+        } else if (response.status === 403) {
+          throw new Error("Forbidden: Google Drive 접근 권한이 없습니다");
+        } else {
+          throw new Error(`Failed to search for subfolder: ${response.status}`);
+        }
       }
 
       const data = await response.json();
@@ -767,12 +956,20 @@ export class GoogleDriveService {
     
     // Google Auth 컴포넌트에서 설정한 토큰 확인
     const googleAccessToken = localStorage.getItem("google_access_token");
+    const tokenExpiry = localStorage.getItem("google_token_expiry");
+    
     if (googleAccessToken && !instance.isAuthenticated()) {
       instance.accessToken = googleAccessToken;
-      const expiry = localStorage.getItem("google_token_expiry");
-      if (expiry) {
-        instance.tokenExpiry = parseInt(expiry);
+      if (tokenExpiry) {
+        instance.tokenExpiry = parseInt(tokenExpiry);
       }
+    }
+    
+    // 토큰 만료 확인
+    if (tokenExpiry && Date.now() >= parseInt(tokenExpiry)) {
+      console.error("Google Drive token has expired, clearing tokens");
+      instance.clearTokens();
+      throw new Error("Google Drive 인증이 만료되었습니다. 다시 로그인해주세요.");
     }
     
     if (!instance.isAuthenticated()) {
@@ -801,13 +998,14 @@ export class GoogleDriveService {
       const fileName = memo.mode === "일반" ? `${memo.title || 'untitled'}.json` : `${memo.internalTitle || 'untitled'}.json`;
       const content = JSON.stringify(memo, null, 2);
 
-      // First, try to find existing file by memo ID (search in file content)
+      // Find existing file by memo ID
       let existingFileId: string | null = null;
       
       // Search all JSON files in the target folder
       const allFiles = await instance.listFiles(targetFolderId);
       const jsonFiles = allFiles.filter(file => file.name.endsWith('.json') && file.name !== 'user-config.json');
       
+      // Find by memo ID
       for (const file of jsonFiles) {
         try {
           const fileContent = await instance.getFileContent(file.id);
@@ -855,6 +1053,12 @@ export class GoogleDriveService {
       console.log(`Successfully saved memo to Google Drive: ${fileName}`);
     } catch (error) {
       console.error("Failed to save memo to Drive:", error);
+      
+      // 인증 오류인 경우 더 구체적인 메시지 출력
+      if (error instanceof Error && error.message.includes("인증이 만료")) {
+        console.error("Google Drive authentication expired - user needs to re-login");
+        throw error; // 상위로 전달하여 UI에서 처리할 수 있도록
+      }
     }
   }
 
@@ -874,19 +1078,19 @@ export class GoogleDriveService {
     
     if (!instance.isAuthenticated()) {
       console.log("Google Drive: Not authenticated, skipping delete");
-      return;
+      throw new Error("Google Drive not authenticated");
     }
 
     try {
       const fileName = memo.mode === "일반" ? `${memo.title || 'untitled'}.json` : `${memo.internalTitle || 'untitled'}.json`;
       
-      // Search for the file by memo ID (not by filename)
+      // Search for the file by memo ID (not by filename) in all folders
       const folderId = await instance.ensureNeisMateFolder();
       
-      // Search all JSON files in the NEIS Mate folder and subfolders
       let fileToDelete: string | null = null;
+      let foundFileName: string | null = null;
       
-      const searchInFolder = async (searchFolderId: string): Promise<string | null> => {
+      const searchInFolder = async (searchFolderId: string): Promise<{fileId: string, fileName: string} | null> => {
         const files = await instance.listFiles(searchFolderId);
         const jsonFiles = files.filter(file => file.name.endsWith('.json') && file.name !== 'user-config.json');
         
@@ -895,9 +1099,10 @@ export class GoogleDriveService {
             const fileContent = await instance.getFileContent(file.id);
             const fileMemo = JSON.parse(fileContent);
             if (fileMemo.id === memo.id) {
-              return file.id;
+              return { fileId: file.id, fileName: file.name };
             }
-          } catch {
+          } catch (error) {
+            console.warn(`Failed to parse file ${file.name}:`, error);
             // Skip files that can't be parsed
           }
         }
@@ -914,14 +1119,19 @@ export class GoogleDriveService {
         return null;
       };
       
-      fileToDelete = await searchInFolder(folderId);
+      const foundFile = await searchInFolder(folderId);
       
-      if (fileToDelete) {
+      if (foundFile) {
+        fileToDelete = foundFile.fileId;
+        foundFileName = foundFile.fileName;
+        
         // Delete the file
         await instance.deleteFile(fileToDelete);
-        console.log(`Successfully deleted memo from Google Drive: ${fileName} (ID: ${memo.id})`);
+        console.log(`Successfully deleted memo from Google Drive: ${foundFileName} (ID: ${memo.id})`);
       } else {
-        console.log(`Memo file not found in Google Drive: ${fileName} (ID: ${memo.id})`);
+        console.warn(`Memo file not found in Google Drive: ${fileName} (ID: ${memo.id})`);
+        // 파일을 찾지 못했지만 이미 삭제된 것으로 간주하고 오류로 처리하지 않음
+        return;
       }
     } catch (error) {
       console.error("Failed to delete memo from Drive:", error);
@@ -932,13 +1142,13 @@ export class GoogleDriveService {
   static async loadMemos(folderId?: string): Promise<Memo[]> {
     // Prevent concurrent loading
     if (GoogleDriveService.isLoading) {
-      console.log("GoogleDrive: Already loading, skipping duplicate request");
+      console.log("GoogleDrive: Already loading, returning empty array");
       return [];
     }
 
     // Prevent loading if already loaded (unless forced)
     if (GoogleDriveService.hasLoaded) {
-      console.log("GoogleDrive: Already loaded, skipping duplicate request");
+      console.log("GoogleDrive: Already loaded, returning empty array");
       return [];
     }
 
@@ -959,56 +1169,70 @@ export class GoogleDriveService {
       }
 
       const memos: Memo[] = [];
-      const seenMemoIds = new Set<string>(); // 중복 방지를 위한 ID 추적
+      const allFilesToProcess: Array<{file: GoogleDriveFile, folderName: string}> = [];
 
-      // 루트 폴더에서 직접 메모 파일들 가져오기
+      // 루트 폴더에서 직접 메모 파일들 수집
       const rootFiles = await instance.listFiles(targetFolderId);
+      
+      // 루트 폴더의 JSON 파일들 수집
       for (const file of rootFiles) {
-        // 설정 파일은 제외하고 메모 파일만 처리
         if (file.name.endsWith(".json") && file.name !== "user-config.json") {
-          try {
-            const content = await instance.getFileContent(file.id);
-            const memo = JSON.parse(content);
-            
-            // ID 중복 체크
-            if (memo.id && !seenMemoIds.has(memo.id)) {
-              seenMemoIds.add(memo.id);
-              memos.push(memo);
-              console.log(`✓ Loaded memo from root: ${file.name} (ID: ${memo.id})`);
-            } else {
-              console.warn(`⚠ Skipping duplicate memo in root: ${file.name} (ID: ${memo.id || 'NO_ID'})`);
-            }
-          } catch (error) {
-            console.error(`Failed to parse memo from file ${file.name}:`, error);
-          }
+          allFilesToProcess.push({file, folderName: "root"});
         }
       }
 
-      // 하위 폴더들에서도 메모 파일들 가져오기 (일반 모드용)
+      // 하위 폴더들에서도 메모 파일들 수집 (일반 모드용)
       const subFolders = rootFiles.filter(file => 
         file.mimeType === 'application/vnd.google-apps.folder'
       );
 
+      // 각 하위 폴더의 파일들도 수집
       for (const folder of subFolders) {
         const subFiles = await instance.listFiles(folder.id);
         for (const file of subFiles) {
-          // 설정 파일은 제외하고 메모 파일만 처리
           if (file.name.endsWith(".json") && file.name !== "user-config.json") {
-            try {
-              const content = await instance.getFileContent(file.id);
-              const memo = JSON.parse(content);
-              
-              // ID 중복 체크
-              if (memo.id && !seenMemoIds.has(memo.id)) {
-                seenMemoIds.add(memo.id);
-                memos.push(memo);
-                console.log(`✓ Loaded memo from subfolder ${folder.name}: ${file.name} (ID: ${memo.id})`);
-              } else {
-                console.warn(`⚠ Skipping duplicate memo in ${folder.name}: ${file.name} (ID: ${memo.id || 'NO_ID'})`);
-              }
-            } catch (error) {
-              console.error(`Failed to parse memo from file ${file.name} in folder ${folder.name}:`, error);
-            }
+            allFilesToProcess.push({file, folderName: folder.name});
+          }
+        }
+      }
+
+      // 모든 파일을 병렬로 처리하여 메모 객체들을 가져온 후, 중복 제거
+      const fileProcessingPromises = allFilesToProcess.map(async ({file, folderName}) => {
+        try {
+          const content = await instance.getFileContent(file.id);
+          const memo = JSON.parse(content);
+          
+          return {
+            memo,
+            fileName: file.name,
+            folderName,
+            success: true
+          };
+        } catch (error) {
+          console.error(`Failed to parse memo from file ${file.name} in ${folderName}:`, error);
+          return {
+            memo: null,
+            fileName: file.name,
+            folderName,
+            success: false
+          };
+        }
+      });
+
+      // 모든 파일 처리 완료까지 대기
+      const processedFiles = await Promise.all(fileProcessingPromises);
+
+      // 성공적으로 처리된 파일들에서 중복 제거
+      const seenMemoIds = new Set<string>();
+      
+      for (const {memo, fileName, folderName, success} of processedFiles) {
+        if (success && memo && memo.id) {
+          if (!seenMemoIds.has(memo.id)) {
+            seenMemoIds.add(memo.id);
+            memos.push(memo);
+            console.log(`✓ Loaded memo from ${folderName}: ${fileName} (ID: ${memo.id})`);
+          } else {
+            console.warn(`⚠ Skipping duplicate memo in ${folderName}: ${fileName} (ID: ${memo.id})`);
           }
         }
       }
@@ -1038,6 +1262,54 @@ export class GoogleDriveService {
       }
     } catch (error) {
       console.error("Failed to sync memos with Drive:", error);
+    }
+  }
+
+  // Google Drive에서 모든 NEIS Mate 데이터 삭제
+  static async clearAllData(): Promise<void> {
+    const instance = GoogleDriveService.getInstance();
+    if (!instance.isAuthenticated()) {
+      console.log("Google Drive: Not authenticated, skipping clear all data");
+      return;
+    }
+
+    try {
+      console.log("GoogleDrive: Starting to clear all NEIS Mate data");
+      const folderId = await instance.ensureNeisMateFolder();
+      
+      const deleteAllInFolder = async (searchFolderId: string): Promise<void> => {
+        const files = await instance.listFiles(searchFolderId);
+        console.log(`Found ${files.length} items in folder ${searchFolderId}`);
+        
+        // 모든 파일과 폴더 삭제
+        for (const file of files) {
+          try {
+            if (file.mimeType === 'application/vnd.google-apps.folder') {
+              // 하위 폴더인 경우 재귀적으로 삭제
+              console.log(`Deleting subfolder: ${file.name} (${file.id})`);
+              await deleteAllInFolder(file.id);
+              await instance.deleteFile(file.id);
+              console.log(`Successfully deleted subfolder: ${file.name}`);
+            } else {
+              // 일반 파일 삭제
+              console.log(`Deleting file: ${file.name} (${file.id})`);
+              await instance.deleteFile(file.id);
+              console.log(`Successfully deleted file: ${file.name}`);
+            }
+          } catch (error) {
+            console.error(`Failed to delete ${file.name}:`, error);
+            // 개별 파일 삭제 실패해도 계속 진행
+          }
+        }
+      };
+
+      // NEIS Mate 폴더 내의 모든 파일과 하위 폴더 삭제
+      await deleteAllInFolder(folderId);
+      
+      console.log("GoogleDrive: Successfully cleared all NEIS Mate data");
+    } catch (error) {
+      console.error("Failed to clear all data from Google Drive:", error);
+      throw error;
     }
   }
 }

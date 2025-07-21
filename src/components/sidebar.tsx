@@ -12,9 +12,11 @@ import {
   Search,
   Menu,
   ArrowUpDown,
+  X,
 } from "lucide-react";
 import type { Memo, Folder, SortOption, GeneralMemo } from "@/types";
 import { generateFolderId } from "@/lib/memo-utils";
+import { GoogleDriveService } from "@/lib/google-drive";
 import "primereact/resources/themes/lara-light-blue/theme.css";
 import "primereact/resources/primereact.min.css";
 import "primeicons/primeicons.css";
@@ -120,7 +122,12 @@ const treeStyles = `
   
 `;
 
-export function Sidebar() {
+interface SidebarProps {
+  onMobileClose?: () => void;
+  isMobile?: boolean;
+}
+
+export function Sidebar({ onMobileClose, isMobile = false }: SidebarProps = {}) {
   const {
     user,
     memos,
@@ -133,9 +140,11 @@ export function Sidebar() {
     setSortOption,
     addFolder,
     setFolders,
+    updateFolder,
     updateMemo,
     deleteFolder,
     setLoginModalDismissed,
+    googleDriveFolderId,
   } = useAppStore();
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -160,6 +169,8 @@ export function Sidebar() {
     
     setCurrentMemoId(null);
     setTimeout(() => setCurrentMemoId("NEW_FILE"), 0);
+    // Close mobile sidebar when creating new file
+    onMobileClose?.();
   };
 
   const handleCreateNewFolder = () => {
@@ -170,12 +181,14 @@ export function Sidebar() {
       name: "새 폴더",
       createdAt: new Date(),
       parentId: undefined,
+      googleDriveId: undefined, // Google Drive에는 아직 생성하지 않음
     };
     
+    // 로컬 상태에만 먼저 추가
     addFolder(newFolder);
     setEditingFolderId(newFolder.id);
     setEditingFolderName(newFolder.name);
-    console.log("새 폴더 생성됨:", newFolder);
+    console.log("새 폴더 생성됨 (로컬만):", newFolder);
   };
 
   const getMemoTitle = (memo: Memo): string => {
@@ -391,7 +404,7 @@ export function Sidebar() {
 
   if (sidebarCollapsed) {
     return (
-      <div className="w-14 border-r bg-card p-2">
+      <div className="w-14 bg-card p-2">
         <Button variant="ghost" size="icon" onClick={() => setSidebarCollapsed(false)}>
           <Menu className="h-4 w-4" />
         </Button>
@@ -409,13 +422,53 @@ export function Sidebar() {
     setEditingFolderName(currentName);
   };
 
-  const handleSaveFolderName = (folderId: string) => {
+  const handleSaveFolderName = async (folderId: string) => {
     if (!editingFolderName.trim()) return;
     
-    const updatedFolders = folders.map(f => 
-      f.id === folderId ? { ...f, name: editingFolderName.trim() } : f
-    );
-    setFolders(updatedFolders);
+    const folder = folders.find(f => f.id === folderId);
+    if (!folder) return;
+
+    const newName = editingFolderName.trim();
+    
+    // Google Drive와 동기화
+    if (user?.isLoggedIn) {
+      const googleDrive = GoogleDriveService.getInstance();
+      console.log("Google Drive authentication status:", await googleDrive.isAuthenticated());
+      console.log("Google Drive Folder ID:", googleDriveFolderId);
+      
+      if ((await googleDrive.isAuthenticated()) && googleDriveFolderId) {
+        try {
+          if (folder.googleDriveId) {
+            // 기존 폴더 이름 변경
+            console.log("Renaming folder in Google Drive...");
+            await googleDrive.renameFolder(folder.googleDriveId, newName);
+            console.log("Folder renamed in Google Drive");
+          } else {
+            // 새 폴더를 Google Drive에 생성
+            console.log("Creating new folder in Google Drive...");
+            const createdFolder = await googleDrive.createFolder(newName, googleDriveFolderId);
+            console.log("New folder created in Google Drive:", createdFolder);
+            
+            // Store에 googleDriveId 업데이트
+            updateFolder(folderId, { 
+              name: newName,
+              googleDriveId: createdFolder.id 
+            });
+            setEditingFolderId(null);
+            setEditingFolderName("");
+            return;
+          }
+        } catch (error) {
+          console.error("Failed to sync folder with Google Drive:", error);
+          console.error("Google Drive Folder ID:", googleDriveFolderId);
+          console.error("Folder data:", folder);
+          // Google Drive 동기화 실패해도 로컬 상태는 업데이트
+        }
+      }
+    }
+
+    // 로컬 상태 업데이트
+    updateFolder(folderId, { name: newName });
     setEditingFolderId(null);
     setEditingFolderName("");
   };
@@ -456,9 +509,13 @@ export function Sidebar() {
     if (node.type === "memo") {
       setCurrentMemoId((node.data as Memo).id);
       setLastSelectedKey(nodeKey);
+      // Close mobile sidebar when memo is selected
+      onMobileClose?.();
     } else if (node.type === "folder") {
       if (user?.mode === "일반") {
         setCurrentFolderId((node.data as Folder).id);
+        // Close mobile sidebar when folder is selected in general mode
+        onMobileClose?.();
       }
       
       // Check if this is a second click on the same folder
@@ -572,15 +629,21 @@ export function Sidebar() {
   };
 
   return (
-    <div className="w-80 border-r bg-card flex flex-col h-full">
+    <div className={`${isMobile ? 'w-full h-full rounded-lg' : 'w-80'} bg-card flex flex-col h-full`}>
       <style>{treeStyles}</style>
       {/* Header */}
       <div className="p-4 border-b">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold pl-0.5">보관함</h2>
-          <Button variant="ghost" size="icon" className="w-5 h-6" onClick={() => setSidebarCollapsed(true)}>
-            <Menu className="h-4 w-4" />
-          </Button>
+          {isMobile ? (
+            <Button variant="ghost" size="icon" className="w-5 h-6" onClick={onMobileClose}>
+              <X className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button variant="ghost" size="icon" className="w-5 h-6" onClick={() => setSidebarCollapsed(true)}>
+              <Menu className="h-4 w-4" />
+            </Button>
+          )}
         </div>
 
         {/* Search */}
@@ -624,25 +687,48 @@ export function Sidebar() {
         </div>
 
         <div className="px-2 py-1 flex-1 overflow-y-auto tree-container">
-          <Tree
-            value={buildTreeData}
-            nodeTemplate={nodeTemplate}
-            dragdropScope="demo"
-            onDragDrop={onDragDrop}
-            onSelect={onNodeSelect}
-            selectionMode="single"
-            selectionKeys={selectedKeys}
-            onSelectionChange={(e) => setSelectedKeys(e.value as string)}
-            expandedKeys={expandedKeys}
-            onToggle={(e) => setExpandedKeys(e.value)}
-            className="w-full border-none bg-transparent h-full"
-            style={{ padding: '0px', height: '100%' }}
-          />
-          
-          {buildTreeData.length === 0 && (
-            <div className="p-4 text-center text-muted-foreground">
-              {searchQuery ? "검색 결과가 없습니다." : "메모가 없습니다."}
+          {buildTreeData.length === 0 ? (
+            <div className="flex flex-col items-center justify-start pt-8 px-4 text-center text-muted-foreground">
+              <div className="space-y-2">
+                {searchQuery ? (
+                  <>
+                    <p className="font-medium">검색 결과가 없습니다</p>
+                    <p className="text-sm text-muted-foreground/80">
+                      다른 검색어를 시도해보세요
+                    </p>
+                  </>
+                ) : user?.isLoggedIn ? (
+                  <>
+                    <p className="font-medium">메모가 없습니다</p>
+                    <p className="text-sm text-muted-foreground/80">
+                      새 파일 버튼을 눌러 첫 번째 메모를 작성해보세요
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-medium">로그인이 필요합니다</p>
+                    <p className="text-sm text-muted-foreground/80">
+                      Google 계정으로 로그인하여 메모를 관리하세요
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
+          ) : (
+            <Tree
+              value={buildTreeData}
+              nodeTemplate={nodeTemplate}
+              dragdropScope="demo"
+              onDragDrop={onDragDrop}
+              onSelect={onNodeSelect}
+              selectionMode="single"
+              selectionKeys={selectedKeys}
+              onSelectionChange={(e) => setSelectedKeys(e.value as string)}
+              expandedKeys={expandedKeys}
+              onToggle={(e) => setExpandedKeys(e.value)}
+              className="w-full border-none bg-transparent h-full"
+              style={{ padding: '0px', height: '100%' }}
+            />
           )}
         </div>
       </div>

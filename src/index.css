@@ -113,11 +113,28 @@
 }
 
 /* 기본 스타일 적용 */
+html, body {
+  height: 100%;
+  overflow-x: hidden; /* 수평 스크롤 방지 */
+  -webkit-overflow-scrolling: touch; /* iOS 부드러운 스크롤 */
+  position: fixed; /* 모바일에서 주소창으로 인한 높이 변화 방지 */
+  width: 100%;
+}
+
 body {
   @apply bg-background text-foreground;
   font-family: 'Pretendard', system-ui, sans-serif;
   font-feature-settings: 'ss05';
   transition: background-color 0.3s ease, color 0.3s ease;
+  margin: 0;
+  padding: 0;
+}
+
+#root {
+  height: 100vh;
+  height: 100dvh; /* 동적 뷰포트 높이 사용 (최신 브라우저) */
+  overflow: hidden;
+  position: relative;
 }
 
 /* 모든 요소의 기본 border 색상 */
@@ -128,4 +145,42 @@ body {
 /* 부드러운 테마 전환 효과 */
 *, *::before, *::after {
   transition: border-color 0.3s ease, background-color 0.3s ease, color 0.3s ease;
+}
+
+/* 모바일 최적화 스타일 */
+@media (max-width: 768px) {
+  /* 터치 스크롤 개선 */
+  * {
+    -webkit-touch-callout: none; /* iOS 콘텍스트 메뉴 방지 */
+    -webkit-tap-highlight-color: transparent; /* 터치 하이라이트 제거 */
+  }
+  
+  /* 입력 요소에서 확대 방지 */
+  input, textarea, select {
+    font-size: 16px !important; /* iOS 확대 방지 */
+  }
+  
+  /* 수평 스크롤 완전 차단 */
+  body, html, #root {
+    max-width: 100vw;
+    overflow-x: hidden !important;
+  }
+  
+  /* 모바일에서 부드러운 스크롤 */
+  .scrollable {
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+  }
+  
+  /* 에디터 영역 모바일 최적화 */
+  .ProseMirror {
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: manipulation;
+  }
+  
+  /* 모바일에서 터치 스크롤 영역 */
+  .mobile-scroll {
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
 }

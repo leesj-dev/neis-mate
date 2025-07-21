@@ -95,9 +95,12 @@ export function AppLayout() {
   }
   
   return (
-    <div className="flex h-screen bg-background text-foreground">
-      <Sidebar />
-      <div className="flex flex-1 flex-col">
+    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+      {/* Desktop Sidebar */}
+      <div className="hidden md:block border-r">
+        <Sidebar />
+      </div>
+      <div className="flex flex-1 flex-col min-w-0">
         <Header />
         <Editor />
       </div>

@@ -1,31 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
-import TextAlign from "@tiptap/extension-text-align";
-import Highlight from "@tiptap/extension-highlight";
-import { TextStyle } from "@tiptap/extension-text-style";
-import FontFamily from "@tiptap/extension-font-family";
-import { Color } from "@tiptap/extension-color";
-import { Extension } from "@tiptap/core";
 import { useAppStore } from "@/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { 
+  EditorToolbar, 
+  FontSize, 
+  StarterKit, 
+  TextAlign, 
+  Highlight, 
+  TextStyle, 
+  FontFamily, 
+  Color 
+} from "@/components/editor-toolbar";
 import {
   FilePlus,
   Save,
   Clock,
-  Undo,
-  Redo,
-  Bold,
-  Italic,
-  Strikethrough,
-  Underline as UnderlineIcon,
-  Highlighter,
-  AlignLeft,
-  AlignCenter,
-  AlignRight,
-  AlignJustify,
 } from "lucide-react";
 import { createNewMemo } from "@/lib/memo-utils";
 import { getYears, getDefaultYear } from "@/lib/year-utils";
@@ -34,78 +26,6 @@ import type { Grade, Year, Memo } from "@/types";
 const GRADES: Grade[] = ["고3", "고2", "고1", "중3", "중2", "중1", "초6", "초5", "초4", "초3", "초2", "초1"];
 const YEARS = getYears();
 const DEFAULT_YEAR = getDefaultYear();
-
-// Font Size 확장 생성
-const FontSize = Extension.create({
-  name: "fontSize",
-
-  addOptions() {
-    return {
-      types: ["textStyle"],
-    };
-  },
-
-  addGlobalAttributes() {
-    return [
-      {
-        types: this.options.types,
-        attributes: {
-          fontSize: {
-            default: null,
-            parseHTML: (element) => element.style.fontSize.replace(/['"]+/g, ""),
-            renderHTML: (attributes) => {
-              if (!attributes.fontSize) {
-                return {};
-              }
-              return {
-                style: `font-size: ${attributes.fontSize}`,
-              };
-            },
-          },
-        },
-      },
-    ];
-  },
-
-  addCommands() {
-    return {
-      setFontSize:
-        (fontSize) =>
-        ({ chain }) => {
-          return chain().setMark("textStyle", { fontSize }).run();
-        },
-      unsetFontSize:
-        () =>
-        ({ chain }) => {
-          return chain().setMark("textStyle", { fontSize: null }).removeEmptyTextStyle().run();
-        },
-    };
-  },
-});
-
-const FONT_SIZES = ["12px", "14px", "16px", "18px", "20px", "22px", "24px", "26px", "28px", "30px", "32px"];
-
-// 색상 팔레트 - test1.html 참조
-const COLORS = [
-  // 그레이 스케일
-  "#181D27",
-  "#252B37",
-  "#414651",
-  "#535862",
-  "#717680",
-  "#A4A7AE",
-  "#D5D7DA",
-  "#FFFFFF",
-  // 컬러 팔레트
-  "#079455",
-  "#1570EF",
-  "#444CE7",
-  "#6938EF",
-  "#BA24D5",
-  "#DD2590",
-  "#D92D20",
-  "#E04F16",
-];
 
 export function Editor() {
   const {
@@ -148,12 +68,21 @@ export function Editor() {
   const [fontFamilyOpen, setFontFamilyOpen] = useState(false);
   const [fontSizeOpen, setFontSizeOpen] = useState(false);
 
+  // 동적 에디터 높이 계산
+  const [editorHeight, setEditorHeight] = useState("400px");
+
   const currentMemo = currentMemoId && currentMemoId !== "NEW_FILE" ? memos.find((m) => m.id === currentMemoId) : null;
 
   // Tiptap 에디터 초기화
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      StarterKit.configure({
+        paragraph: {
+          HTMLAttributes: {
+            class: "editor-paragraph",
+          },
+        },
+      }),
       TextAlign.configure({
         types: ["heading", "paragraph"],
       }),
@@ -166,14 +95,29 @@ export function Editor() {
     content: content,
     onUpdate: ({ editor }) => {
       const html = editor.getHTML();
+      // 에디터에서 직접 변경된 내용만 state에 반영 (무한 루프 방지)
       handleContentChange(html);
     },
   });
 
-  // 에디터 내용 업데이트
+  // 에디터 내용 업데이트 (외부에서 content가 변경된 경우에만)
   useEffect(() => {
     if (editor && content !== editor.getHTML()) {
-      editor.commands.setContent(content);
+      // 커서 위치를 보존하기 위해 현재 selection 저장
+      const { from, to } = editor.state.selection;
+      editor.commands.setContent(content, { emitUpdate: false });
+
+      // 가능한 경우 커서 위치 복원
+      try {
+        if (from <= editor.state.doc.content.size && to <= editor.state.doc.content.size) {
+          editor.commands.setTextSelection({
+            from: Math.min(from, editor.state.doc.content.size),
+            to: Math.min(to, editor.state.doc.content.size),
+          });
+        }
+      } catch {
+        // 커서 위치 복원 실패 시 무시
+      }
     }
   }, [editor, content]);
 
@@ -197,6 +141,55 @@ export function Editor() {
     };
   }, [editor, triggerUpdate]);
 
+  // 동적 에디터 높이 계산
+  useEffect(() => {
+    const calculateEditorHeight = () => {
+      const vh = window.innerHeight;
+
+      // 헤더, 툴바, 푸터 등의 고정 높이 계산
+      const headerHeight = user?.isLoggedIn ? 70 : 0; // 저장 버튼 헤더
+      const toolbarHeight = 120; // 툴바 높이 (2줄)
+      const footerHeight = 140; // 통계 푸터
+      const paddingHeight = user?.isLoggedIn ? 48 : 48; // 패딩 (p-6 = 24px * 2)
+      const modeFieldsHeight = user?.mode === "일반" ? 60 : user?.mode === "학생" ? 80 : user?.mode === "교사" ? 80 : 0;
+      const containerPadding = 32; // 에디터 컨테이너 패딩 (p-4 = 16px * 2)
+
+      const availableHeight =
+        vh - headerHeight - toolbarHeight - footerHeight - paddingHeight - modeFieldsHeight - containerPadding;
+
+      // 최소 높이 보장 (모바일: 300px, 데스크톱: 400px)
+      const minHeight = window.innerWidth >= 768 ? 400 : 300;
+      const calculatedHeight = Math.max(availableHeight, minHeight);
+
+      setEditorHeight(`${calculatedHeight}px`);
+    };
+
+    // 초기 계산
+    calculateEditorHeight();
+
+    // 리사이즈 및 orientationchange 이벤트 리스너
+    const handleResize = () => {
+      // 키보드 열림/닫힘을 감지하기 위해 약간의 지연
+      setTimeout(calculateEditorHeight, 100);
+    };
+
+    window.addEventListener("resize", handleResize);
+    window.addEventListener("orientationchange", handleResize);
+
+    // Visual Viewport API를 사용하여 키보드 감지 (지원되는 경우)
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", handleResize);
+    }
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("orientationchange", handleResize);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", handleResize);
+      }
+    };
+  }, [user?.isLoggedIn, user?.mode, setEditorHeight]);
+
   // 현재 선택된 텍스트의 폰트 속성 확인 (일관성 체크)
   const getCurrentFontProperties = useCallback(() => {
     if (!editor) return { fontFamily: "system-ui", fontSize: "16px" };
@@ -216,9 +209,11 @@ export function Editor() {
     const fontFamilies = new Set<string>();
     const fontSizes = new Set<string>();
 
-    editor.state.doc.nodesBetween(from, to, (node) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    editor.state.doc.nodesBetween(from, to, (node: any) => {
       if (node.isText && node.marks) {
-        const textStyleMark = node.marks.find((mark) => mark.type.name === "textStyle");
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const textStyleMark = node.marks.find((mark: any) => mark.type.name === "textStyle");
         if (textStyleMark) {
           const fontFamily = textStyleMark.attrs.fontFamily;
           const fontSize = textStyleMark.attrs.fontSize;
@@ -234,8 +229,8 @@ export function Editor() {
     });
 
     return {
-      fontFamily: fontFamilies.size === 1 ? Array.from(fontFamilies)[0] : "",
-      fontSize: fontSizes.size === 1 ? Array.from(fontSizes)[0] : "",
+      fontFamily: fontFamilies.size === 1 ? Array.from(fontFamilies)[0] : fontFamilies.size > 1 ? "mixed" : "system-ui",
+      fontSize: fontSizes.size === 1 ? Array.from(fontSizes)[0] : fontSizes.size > 1 ? "mixed" : "16px",
     };
   }, [editor]);
 
@@ -264,6 +259,31 @@ export function Editor() {
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [isDraft, isNewFile]);
+
+  // 복사 이벤트 핸들러 - 올바른 텍스트 형식으로 복사
+  useEffect(() => {
+    if (!editor) return;
+
+    const handleCopy = (event: ClipboardEvent) => {
+      const editorElement = editor.view.dom;
+      if (!editorElement.contains(event.target as Node)) return;
+
+      const { from, to } = editor.state.selection;
+      if (from === to) return; // 선택된 텍스트가 없으면 기본 동작
+
+      // 선택된 텍스트를 올바른 형식으로 가져오기
+      const selectedText = editor.state.doc.textBetween(from, to);
+
+      // 클립보드에 설정 (HTML 없이 순수 텍스트만)
+      if (event.clipboardData) {
+        event.clipboardData.setData("text/plain", selectedText);
+        event.preventDefault();
+      }
+    };
+
+    document.addEventListener("copy", handleCopy);
+    return () => document.removeEventListener("copy", handleCopy);
+  }, [editor]);
 
   // Helper functions
   const canSave = useCallback(() => {
@@ -332,7 +352,7 @@ export function Editor() {
 
     setLastSavedAt(new Date());
     setIsAutoSaved(false); // 수동 저장
-    
+
     // 저장 완료 후 보존된 속성 지우기
     clearPreservedAttributes();
   }, [
@@ -357,6 +377,22 @@ export function Editor() {
     clearPreservedAttributes,
   ]);
 
+  // 키보드 단축키 - Ctrl+S (Cmd+S) 저장 기능
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Ctrl+S (Windows/Linux) 또는 Cmd+S (Mac)
+      if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+        event.preventDefault(); // 기본 브라우저 저장 동작 방지
+        if (canSave()) {
+          handleSave();
+        }
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [canSave, handleSave]);
+
   const handleCreateNewFile = () => {
     if (!user || !user.mode) return;
 
@@ -373,25 +409,25 @@ export function Editor() {
       } else {
         setTitle("");
       }
-      
+
       if ((user.mode === "학생" || user.mode === "교사") && preservedAttributes.grade) {
         setGrade(preservedAttributes.grade as Grade);
       } else {
         setGrade("");
       }
-      
+
       if ((user.mode === "학생" || user.mode === "교사") && preservedAttributes.subject) {
         setSubject(preservedAttributes.subject);
       } else {
         setSubject("");
       }
-      
+
       if (user.mode === "교사" && preservedAttributes.year) {
         setYear(preservedAttributes.year as Year);
       } else if (user.mode !== "교사") {
         setYear(DEFAULT_YEAR);
       }
-      
+
       if (user.mode === "교사" && preservedAttributes.student) {
         setStudent(preservedAttributes.student);
       } else {
@@ -456,41 +492,43 @@ export function Editor() {
 
     // Save current form data to preserved attributes when mode might change
     const currentAttributes = {
-      title: title || undefined,
+      title: title.trim() || undefined,
       year: year || undefined,
       grade: grade || undefined,
-      subject: subject || undefined,
-      student: student || undefined,
+      subject: subject.trim() || undefined,
+      student: student.trim() || undefined,
     };
 
     // Only save if we have some data to preserve
-    if (Object.values(currentAttributes).some(val => val !== undefined && val !== "")) {
+    if (Object.values(currentAttributes).some((val) => val !== undefined && val !== "")) {
       setPreservedAttributes(currentAttributes);
     }
-  }, [user?.mode, title, year, grade, subject, student, setPreservedAttributes]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.mode, setPreservedAttributes]);
 
   // Restore preserved attributes when starting new file or mode changes
   useEffect(() => {
     // 새 파일이거나 현재 메모가 없을 때 보존된 속성 복원
     if ((isNewFile || !currentMemo) && user?.mode && preservedAttributes) {
       // Restore attributes based on current mode
-      if (user.mode === "일반" && preservedAttributes.title && !title) {
+      if (user.mode === "일반" && preservedAttributes.title && !title.trim()) {
         setTitle(preservedAttributes.title);
       }
       if ((user.mode === "학생" || user.mode === "교사") && preservedAttributes.grade && !grade) {
         setGrade(preservedAttributes.grade as Grade);
       }
-      if ((user.mode === "학생" || user.mode === "교사") && preservedAttributes.subject && !subject) {
+      if ((user.mode === "학생" || user.mode === "교사") && preservedAttributes.subject && !subject.trim()) {
         setSubject(preservedAttributes.subject);
       }
       if (user.mode === "교사" && preservedAttributes.year && !year) {
         setYear(preservedAttributes.year as Year);
       }
-      if (user.mode === "교사" && preservedAttributes.student && !student) {
+      if (user.mode === "교사" && preservedAttributes.student && !student.trim()) {
         setStudent(preservedAttributes.student);
       }
     }
-  }, [isNewFile, currentMemo, user?.mode, preservedAttributes, title, grade, subject, year, student]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNewFile, currentMemo, user?.mode, preservedAttributes]);
 
   // Auto-save functionality
   useEffect(() => {
@@ -519,18 +557,24 @@ export function Editor() {
     setIsAutoSaved,
   ]);
 
-  const handleContentChange = (value: string) => {
-    setContent(value);
-    if (isNewFile && value.trim() !== "") {
-      setIsDraft(true); // 새 파일에서 내용을 입력하기 시작하면 draft 상태로 변경
-    } else if (!isNewFile) {
-      setIsDraft(true);
-    }
+  const handleContentChange = useCallback(
+    (value: string) => {
+      // 이미 같은 값이면 업데이트하지 않음
+      if (value === content) return;
 
-    if (!user?.isLoggedIn) {
-      setLocalMemo(value);
-    }
-  };
+      setContent(value);
+      if (isNewFile && value.trim() !== "") {
+        setIsDraft(true); // 새 파일에서 내용을 입력하기 시작하면 draft 상태로 변경
+      } else if (!isNewFile) {
+        setIsDraft(true);
+      }
+
+      if (!user?.isLoggedIn) {
+        setLocalMemo(value);
+      }
+    },
+    [content, isNewFile, setIsDraft, user?.isLoggedIn, setLocalMemo]
+  );
 
   const handleFieldChange = (field: string, value: string | Grade | Year) => {
     if (isNewFile && value !== "") {
@@ -543,7 +587,7 @@ export function Editor() {
     if (user?.mode === "학생" && (field === "grade" || field === "subject")) {
       const currentGrade = field === "grade" ? value : grade;
       const currentSubject = field === "subject" ? value : subject;
-      
+
       // 기존에 보존된 교사 속성이 있고, 현재 학년/과목과 다르면 교사 속성 제거
       if (preservedAttributes.year && preservedAttributes.student) {
         if (preservedAttributes.grade !== currentGrade || preservedAttributes.subject !== currentSubject) {
@@ -575,9 +619,32 @@ export function Editor() {
     }
   };
 
+  // HTML을 plaintext로 변환하는 유틸리티 함수
+  const htmlToPlainText = (html: string) => {
+    if (!html) return "";
+
+    return (
+      html
+        .replace(/<\/p>\s*<p[^>]*>/gi, "\n")  // <p> 태그 사이를 줄바꿈으로 변환
+        .replace(/^<p[^>]*>/i, "")  // 첫 번째 <p> 태그 제거
+        .replace(/<\/p>$/i, "")  // 마지막 </p> 태그 제거
+        .replace(/<p[^>]*>/gi, "\n")  // 남은 <p> 태그들을 줄바꿈으로 변환
+        .replace(/<\/p>/gi, "")  // 남은 </p> 태그 제거
+        .replace(/<br\s*\/?>/gi, "\n")  // <br> 태그를 줄바꿈으로 변환
+        .replace(/<[^>]*>/g, "")  // 나머지 모든 HTML 태그 제거
+        // HTML 엔티티 디코딩
+        .replace(/&nbsp;/g, " ")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+    );
+  };
+
   const getWordCount = (text: string) => {
-    // HTML 태그 제거 후 단어 수 계산
-    const plainText = text.replace(/<[^>]*>/g, "");
+    // HTML을 plaintext로 변환 후 단어 수 계산
+    const plainText = htmlToPlainText(text);
     const words = plainText
       .trim()
       .split(/\s+/)
@@ -591,91 +658,29 @@ export function Editor() {
   const getByteCount = (content: string) => {
     if (!content) return 0;
 
-    // HTML 태그 제거
-    const plainText = content.replace(/<[^>]*>/g, "");
+    // HTML을 plaintext로 변환
+    const plainText = htmlToPlainText(content);
 
-    // 개행 문자 처리
-    let processedContent = plainText;
-    if (processedContent === "\n" && processedContent.startsWith("\n")) {
-      processedContent = processedContent.slice(1);
+    let byteCount = 0;
+
+    for (let i = 0; i < plainText.length; i++) {
+      const char = plainText[i];
+
+      // 엔터키 (줄바꿈) - 2바이트
+      if (char === "\n") {
+        byteCount += 2;
+      }
+      // 한글 - 3바이트 (한글 유니코드 범위: 가-힣, ㄱ-ㅎ, ㅏ-ㅣ)
+      else if (/[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(char)) {
+        byteCount += 3;
+      }
+      // 영어, 숫자, 특수문자, 띄어쓰기 - 1바이트
+      else {
+        byteCount += 1;
+      }
     }
-    if (processedContent !== "\n" && processedContent.endsWith("\n")) {
-      processedContent = processedContent.slice(0, -1);
-    }
 
-    // 수학 기호와 그리스 문자를 정의
-    const math_symbols = /[+\-*/=<>∞∑∏∫√∂∆πθΩαβγδεζηλμνξοπρστυφχψω·]/g;
-    const other_symbols = /[''""]/g;
-
-    // 각 카테고리별 필터링
-    const english = processedContent
-      .replace(/[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/g, "") // 한글 제거
-      .replace(/[0-9]/g, "") // 숫자 제거
-      .replace(math_symbols, "") // 수학 기호 제거
-      .replace(/[{}[\]/?.,;:|)*~`!^\-_+<>@#$%&\\=()'"]/g, "") // 특수문자 제거
-      .replace(/\s/g, "") // 공백 제거
-      .replace(other_symbols, ""); // 기타 기호 제거
-
-    const korean = processedContent
-      .replace(/[a-zA-Z]/g, "") // 영문 제거
-      .replace(/[0-9]/g, "") // 숫자 제거
-      .replace(math_symbols, "") // 수학 기호 제거
-      .replace(/[{}[\]/?.,;:|)*~`!^\-_+<>@#$%&\\=()'"]/g, "") // 특수문자 제거
-      .replace(/\s/g, "") // 공백 제거
-      .replace(other_symbols, ""); // 기타 기호 제거
-
-    const number = processedContent
-      .replace(/[a-zA-Z]/g, "") // 영문 제거
-      .replace(/[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/g, "") // 한글 제거
-      .replace(math_symbols, "") // 수학 기호 제거
-      .replace(/[{}[\]/?.,;:|)*~`!^\-_+<>@#$%&\\=()'"]/g, "") // 특수문자 제거
-      .replace(/\s/g, "") // 공백 제거
-      .replace(other_symbols, ""); // 기타 기호 제거
-
-    const onebyte_special = processedContent
-      .replace(/[a-zA-Z]/g, "") // 영문 제거
-      .replace(/[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/g, "") // 한글 제거
-      .replace(/[0-9]/g, "") // 숫자 제거
-      .replace(/[\n\t\r\s]/g, ""); // 공백 및 줄바꿈 제거
-
-    const threebyte_special = processedContent
-      .replace(/[a-zA-Z]/g, "") // 영문 제거
-      .replace(/[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/g, "") // 한글 제거
-      .replace(/[0-9]/g, "") // 숫자 제거
-      .replace(math_symbols, "") // 수학 기호 제거
-      .replace(/[{}[\]/?.,;:|)*~`!^\-_+<>@#$%&\\=()'"]/g, "") // 특수문자 제거
-      .replace(/[\n\t\r\s]/g, "") // 공백 및 줄바꿈 제거
-      .replace(other_symbols, ""); // 기타 기호 제거
-
-    const space = processedContent
-      .replace(/[a-zA-Z]/g, "") // 영문 제거
-      .replace(/[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/g, "") // 한글 제거
-      .replace(/[0-9]/g, "") // 숫자 제거
-      .replace(math_symbols, "") // 수학 기호 제거
-      .replace(/[{}[\]/?.,;:|)*~`!^\-_+<>@#$%&\\=()'"]/g, "") // 특수문자 제거
-      .replace(other_symbols, "") // 기타 기호 제거
-      .replace(/[^\s]/g, "") // 공백 이외의 문자 제거
-      .replace(/[\n\r]/g, ""); // 줄바꿈 문자 제거
-
-    const line = processedContent
-      .replace(/[a-zA-Z]/g, "") // 영문 제거
-      .replace(/[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/g, "") // 한글 제거
-      .replace(/[{}[\]/?.,;:|)*~`!^\-_+<>@#$%&\\=()'"]/g, "") // 특수문자 제거
-      .replace(/[0-9]/g, "") // 숫자 제거
-      .replace(math_symbols, "") // 수학 기호 제거
-      .replace(/[^\n]/g, "") // 줄바꿈 이외 문자 제거
-      .replace(other_symbols, ""); // 기타 기호 제거
-
-    // 최종 계산
-    return (
-      english.length +
-      korean.length * 3 +
-      number.length +
-      onebyte_special.length +
-      threebyte_special.length * 3 +
-      space.length +
-      line.length * 2
-    );
+    return byteCount;
   };
 
   const getTimeSinceLastSave = () => {
@@ -722,275 +727,26 @@ export function Editor() {
             </div>
 
             {/* Rich Text Toolbar for non-logged in users */}
-            <div className="mb-4 flex flex-col gap-3 w-full">
-              {/* Top Row - Font Controls */}
-              <div className="flex w-max flex-col items-start justify-center gap-2 md:flex-row md:items-center md:justify-start md:gap-3">
-                <div className="flex gap-2 items-center">
-                  {/* Undo/Redo */}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().undo().run()}
-                    disabled={!editor?.can().undo()}
-                    className="flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted disabled:opacity-50"
-                  >
-                    <Undo className="w-4 h-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().redo().run()}
-                    disabled={!editor?.can().redo()}
-                    className="flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted disabled:opacity-50"
-                  >
-                    <Redo className="w-4 h-4" />
-                  </Button>
-
-                  <div className="w-px h-6 bg-border mx-1" />
-
-                  {/* Font Family */}
-                  <div className="flex flex-col gap-1.5 w-full md:w-42">
-                    <Select
-                      key={`font-family-${updateTrigger}`}
-                      value={getCurrentFontProperties().fontFamily}
-                      open={fontFamilyOpen}
-                      onOpenChange={setFontFamilyOpen}
-                      onValueChange={(value) => {
-                        if (!editor) return;
-
-                        editor.chain().focus();
-
-                        if (value === "system-ui") {
-                          // 기본 폰트로 설정 (폰트 패밀리 제거)
-                          editor.chain().unsetFontFamily().run();
-                        } else {
-                          // 특정 폰트로 설정
-                          editor.chain().setFontFamily(value).run();
-                        }
-
-                        // 즉시 UI 업데이트
-                        setTimeout(triggerUpdate, 0);
-                        setFontFamilyOpen(false);
-                      }}
-                    >
-                      <SelectTrigger className="h-9 text-sm border-border hover:border-border/80 focus:border-ring">
-                        <div className="flex items-center gap-2">
-                          <svg
-                            className="w-4 h-4 text-muted-foreground"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                          >
-                            <path d="M4 7c0-.932 0-1.398.152-1.765a2 2 0 0 1 1.083-1.083C5.602 4 6.068 4 7 4h10c.932 0 1.398 0 1.765.152a2 2 0 0 1 1.083 1.083C20 5.602 20 6.068 20 7M9 20h6M12 4v16" />
-                          </svg>
-                          <SelectValue placeholder="폰트 선택" />
-                        </div>
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="system-ui">기본</SelectItem>
-                        <SelectItem value="Pretendard">Pretendard</SelectItem>
-                        <SelectItem value="'NanumSquare Neo'">나눔스퀘어 네오</SelectItem>
-                        <SelectItem value="MaruBuri">마루 부리</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {/* Font Size */}
-                  <div className="flex flex-col gap-1.5 w-full md:w-22">
-                    <Select
-                      key={`font-size-${updateTrigger}`}
-                      value={getCurrentFontProperties().fontSize}
-                      open={fontSizeOpen}
-                      onOpenChange={setFontSizeOpen}
-                      onValueChange={(value) => {
-                        if (!editor) return;
-
-                        editor.chain().focus();
-
-                        if (value === "default") {
-                          // 기본 크기로 설정 (폰트 사이즈 제거)
-                          editor.chain().unsetFontSize().run();
-                        } else {
-                          // 특정 크기로 설정
-                          editor.chain().setFontSize(value).run();
-                        }
-
-                        // 즉시 UI 업데이트
-                        setTimeout(triggerUpdate, 0);
-                        setFontSizeOpen(false);
-                      }}
-                    >
-                      <SelectTrigger className="h-9 text-sm border-border hover:border-border/80 focus:border-ring">
-                        <SelectValue placeholder="크기 선택" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {FONT_SIZES.map((size) => (
-                          <SelectItem key={size} value={size}>
-                            {size}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                {/* Bottom Row - Format Controls */}
-                <div className="flex flex-wrap gap-0.5 md:flex-nowrap items-center">
-                  {/* Text Formatting */}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().toggleBold().run()}
-                    className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                      editor?.isActive("bold") ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                  >
-                    <Bold className="w-5 h-5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().toggleItalic().run()}
-                    className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                      editor?.isActive("italic") ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                  >
-                    <Italic className="w-5 h-5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().toggleStrike().run()}
-                    className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                      editor?.isActive("strike") ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                  >
-                    <Strikethrough className="w-5 h-5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().toggleUnderline().run()}
-                    className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                      editor?.isActive("underline") ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                  >
-                    <UnderlineIcon className="w-5 h-5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().toggleHighlight().run()}
-                    className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                      editor?.isActive("highlight") ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                  >
-                    <Highlighter className="w-5 h-5" />
-                  </Button>
-
-                  {/* Separator */}
-                  <div className="w-px h-6 bg-border mx-1" />
-
-                  {/* Color Picker */}
-                  <div className="relative" ref={colorPaletteRef}>
-                    <button
-                      type="button"
-                      onClick={() => setShowColorPalette(!showColorPalette)}
-                      className="flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted"
-                    >
-                      <div
-                        className="size-4 rounded-full border border-border bg-foreground"
-                        style={{ 
-                          backgroundColor: editor?.getAttributes("textStyle").color || undefined
-                        }}
-                      />
-                    </button>
-
-                    {showColorPalette && (
-                      <div className="absolute top-full left-0 mt-1 z-50 rounded-xl bg-background border border-border p-3 shadow-lg w-52 min-w-52">
-                        <div className="grid grid-cols-8 gap-1">
-                          {COLORS.map((color) => (
-                            <button
-                              key={color}
-                              type="button"
-                              onClick={() => {
-                                editor?.chain().focus().setColor(color).run();
-                                setShowColorPalette(false);
-                              }}
-                              className="p-0.5 hover:bg-muted rounded"
-                            >
-                              <div
-                                className={`size-4 cursor-pointer rounded-full ring-1 ring-black/10 ring-inset ${
-                                  editor?.getAttributes("textStyle").color === color ? "outline-2 outline-offset-2" : ""
-                                }`}
-                                style={{
-                                  backgroundColor: color,
-                                  outlineColor: color,
-                                }}
-                              />
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Separator */}
-                  <div className="w-px h-6 bg-border mx-1" />
-
-                  {/* Text Alignment */}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().setTextAlign("left").run()}
-                    className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                      editor?.isActive({ textAlign: "left" }) ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                  >
-                    <AlignLeft className="w-5 h-5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().setTextAlign("center").run()}
-                    className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                      editor?.isActive({ textAlign: "center" }) ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                  >
-                    <AlignCenter className="w-5 h-5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().setTextAlign("right").run()}
-                    className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                      editor?.isActive({ textAlign: "right" }) ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                  >
-                    <AlignRight className="w-5 h-5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => editor?.chain().focus().setTextAlign("justify").run()}
-                    className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                      editor?.isActive({ textAlign: "justify" }) ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                  >
-                    <AlignJustify className="w-5 h-5" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            <div className="border rounded-lg p-4 min-h-[600px]">
-              <EditorContent
-                editor={editor}
-                className="prose prose-sm max-w-none focus:outline-none [&_.ProseMirror]:min-h-[560px] [&_.ProseMirror]:p-0 [&_.ProseMirror]:outline-none"
-              />
+            <EditorToolbar
+              editor={editor}
+              updateTrigger={updateTrigger}
+              triggerUpdate={triggerUpdate}
+              fontFamilyOpen={fontFamilyOpen}
+              setFontFamilyOpen={setFontFamilyOpen}
+              fontSizeOpen={fontSizeOpen}
+              setFontSizeOpen={setFontSizeOpen}
+              showColorPalette={showColorPalette}
+              setShowColorPalette={setShowColorPalette}
+              getCurrentFontProperties={getCurrentFontProperties}
+            />
             </div>
           </div>
+
+        <div className="border rounded-lg p-4 flex flex-col" style={{ height: editorHeight }}>
+          <EditorContent
+            editor={editor}
+            className="prose prose-sm max-w-none focus:outline-none flex-1 [&_.ProseMirror]:p-0 [&_.ProseMirror]:outline-none [&_.ProseMirror]:h-full [&_.ProseMirror]:overflow-auto"
+          />
         </div>
 
         <div className="border-t bg-card p-4">
@@ -998,7 +754,9 @@ export function Editor() {
             <div className="text-2xl font-bold tabular-nums">{byteCount.toLocaleString()} 바이트</div>
             <div className="text-md tabular-nums">단어 {wordCount.words.toLocaleString()} 개</div>
             <div className="text-md tabular-nums">공백 포함 {wordCount.charactersWithSpaces.toLocaleString()} 자</div>
-            <div className="text-md tabular-nums">공백 제외 {wordCount.charactersWithoutSpaces.toLocaleString()} 자</div>
+            <div className="text-md tabular-nums">
+              공백 제외 {wordCount.charactersWithoutSpaces.toLocaleString()} 자
+            </div>
           </div>
         </div>
       </div>
@@ -1007,21 +765,20 @@ export function Editor() {
 
   // Main editor view
   return (
-    <div className="flex-1 flex flex-col">
+    <div className="flex-1 flex flex-col h-full overflow-hidden">
       {/* Header with save button and auto-save status */}
-      <div className="border-b bg-card px-6 py-3">
+      <div className="border-b bg-card px-6 py-3 flex-shrink-0">
         <div className="flex items-center justify-between max-w-4xl mx-auto">
           <div className="flex items-center gap-4">
-            <Button 
-              onClick={handleSave} 
-              disabled={!canSave()} 
+            <Button
+              onClick={handleSave}
+              disabled={!canSave()}
               variant={isDraft || isNewFile ? "default" : "outline"}
               className="h-9 disabled:bg-muted disabled:text-muted-foreground disabled:border-border"
             >
               <Save className="h-4 w-4 mr-2" />
               저장
             </Button>
-
           </div>
 
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1035,388 +792,143 @@ export function Editor() {
         </div>
       </div>
 
-      <div className="flex-1 p-6">
-        <div className="max-w-4xl mx-auto">
-          {/* Header fields based on mode */}
-          {user.mode === "일반" && (
-            <div className="mb-6">
-              <Input
-                value={title}
-                onChange={(e) => handleFieldChange("title", e.target.value)}
-                placeholder="제목 없음"
-                className="text-lg font-medium"
+      <div className="flex-1 overflow-auto scrollable">
+        <div className="p-6">
+          <div className="max-w-4xl mx-auto">
+            {/* Header fields based on mode */}
+            {user.mode === "일반" && (
+              <div className="mb-4 md:mb-6">
+                <Input
+                  value={title}
+                  onChange={(e) => handleFieldChange("title", e.target.value)}
+                  placeholder="제목 없음"
+                  className="text-lg font-medium"
+                />
+              </div>
+            )}
+
+            {user.mode === "학생" && (
+              <div className="mb-4 md:mb-6 flex justify-start">
+                <div className="flex items-end gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">학년</label>
+                    <Select value={grade} onValueChange={(value) => handleFieldChange("grade", value)}>
+                      <SelectTrigger className="w-24">
+                        <SelectValue placeholder="학년" />
+                      </SelectTrigger>
+                      <SelectContent className="w-24 min-w-24">
+                        {GRADES.map((g) => (
+                          <SelectItem key={g} value={g}>
+                            {g}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">과목</label>
+                    <Input
+                      value={subject}
+                      onChange={(e) => handleFieldChange("subject", e.target.value)}
+                      placeholder="과목 입력"
+                      className="w-32"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {user.mode === "교사" && (
+              <div className="mb-4 md:mb-6 flex justify-start">
+                <div className="flex items-end gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">학년도</label>
+                    <Select
+                      value={year ? year.toString() : ""}
+                      onValueChange={(value) => handleFieldChange("year", parseInt(value) as Year)}
+                    >
+                      <SelectTrigger className="w-24">
+                        <SelectValue placeholder="학년도" />
+                      </SelectTrigger>
+                      <SelectContent className="w-24 min-w-24">
+                        {YEARS.map((y) => (
+                          <SelectItem key={y} value={y.toString()}>
+                            {y}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">학년</label>
+                    <Select value={grade} onValueChange={(value) => handleFieldChange("grade", value)}>
+                      <SelectTrigger className="w-24">
+                        <SelectValue placeholder="학년" />
+                      </SelectTrigger>
+                      <SelectContent className="w-24 min-w-24">
+                        {GRADES.map((g) => (
+                          <SelectItem key={g} value={g}>
+                            {g}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">과목</label>
+                    <Input
+                      value={subject}
+                      onChange={(e) => handleFieldChange("subject", e.target.value)}
+                      placeholder="과목 입력"
+                      className="w-32"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">학생</label>
+                    <Input
+                      value={student}
+                      onChange={(e) => handleFieldChange("student", e.target.value)}
+                      placeholder="이름 입력"
+                      className="w-32"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Rich Text Toolbar */}
+            <EditorToolbar
+              editor={editor}
+              updateTrigger={updateTrigger}
+              triggerUpdate={triggerUpdate}
+              fontFamilyOpen={fontFamilyOpen}
+              setFontFamilyOpen={setFontFamilyOpen}
+              fontSizeOpen={fontSizeOpen}
+              setFontSizeOpen={setFontSizeOpen}
+              showColorPalette={showColorPalette}
+              setShowColorPalette={setShowColorPalette}
+              getCurrentFontProperties={getCurrentFontProperties}
+            />
+
+            {/* Tiptap Editor */}
+            <div className="border rounded-lg p-4 flex flex-col" style={{ height: editorHeight }}>
+              <EditorContent
+                editor={editor}
+                className="prose prose-sm max-w-none focus:outline-none flex-1 [&_.ProseMirror]:p-0 [&_.ProseMirror]:outline-none [&_.ProseMirror]:h-full [&_.ProseMirror]:overflow-auto"
               />
             </div>
-          )}
-
-          {user.mode === "학생" && (
-            <div className="mb-6 flex justify-start">
-              <div className="flex items-end gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-2">학년</label>
-                  <Select value={grade} onValueChange={(value) => handleFieldChange("grade", value)}>
-                    <SelectTrigger className="w-24">
-                      <SelectValue placeholder="학년" />
-                    </SelectTrigger>
-                    <SelectContent className="w-24 min-w-24">
-                      {GRADES.map((g) => (
-                        <SelectItem key={g} value={g}>
-                          {g}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">과목</label>
-                  <Input
-                    value={subject}
-                    onChange={(e) => handleFieldChange("subject", e.target.value)}
-                    placeholder="과목 입력"
-                    className="w-32"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {user.mode === "교사" && (
-            <div className="mb-6 flex justify-start">
-              <div className="flex items-end gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-2">학년도</label>
-                  <Select
-                    value={year ? year.toString() : ""}
-                    onValueChange={(value) => handleFieldChange("year", parseInt(value) as Year)}
-                  >
-                    <SelectTrigger className="w-24">
-                      <SelectValue placeholder="학년도" />
-                    </SelectTrigger>
-                    <SelectContent className="w-24 min-w-24">
-                      {YEARS.map((y) => (
-                        <SelectItem key={y} value={y.toString()}>
-                          {y}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">학년</label>
-                  <Select value={grade} onValueChange={(value) => handleFieldChange("grade", value)}>
-                    <SelectTrigger className="w-24">
-                      <SelectValue placeholder="학년" />
-                    </SelectTrigger>
-                    <SelectContent className="w-24 min-w-24">
-                      {GRADES.map((g) => (
-                        <SelectItem key={g} value={g}>
-                          {g}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">과목</label>
-                  <Input
-                    value={subject}
-                    onChange={(e) => handleFieldChange("subject", e.target.value)}
-                    placeholder="과목 입력"
-                    className="w-32"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">학생</label>
-                  <Input
-                    value={student}
-                    onChange={(e) => handleFieldChange("student", e.target.value)}
-                    placeholder="이름 입력"
-                    className="w-32"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Rich Text Toolbar */}
-          <div className="mb-4 flex flex-col gap-3 w-full">
-            {/* Top Row - Font Controls */}
-            <div className="flex w-max flex-col items-start justify-center gap-2 md:flex-row md:items-center md:justify-start md:gap-3">
-              <div className="flex gap-2 items-center">
-                {/* Undo/Redo */}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().undo().run()}
-                  disabled={!editor?.can().undo()}
-                  className="flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted disabled:opacity-50"
-                >
-                  <Undo className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().redo().run()}
-                  disabled={!editor?.can().redo()}
-                  className="flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted disabled:opacity-50"
-                >
-                  <Redo className="w-4 h-4" />
-                </Button>
-
-                <div className="w-px h-6 bg-border mx-1" />
-
-                {/* Font Family */}
-                <div className="flex flex-col gap-1.5 w-full md:w-42">
-                  <Select
-                    key={`font-family-${updateTrigger}`}
-                    value={getCurrentFontProperties().fontFamily}
-                    open={fontFamilyOpen}
-                    onOpenChange={setFontFamilyOpen}
-                    onValueChange={(value) => {
-                      if (!editor) return;
-
-                      editor.chain().focus();
-
-                      if (value === "system-ui") {
-                        // 기본 폰트로 설정 (폰트 패밀리 제거)
-                        editor.chain().unsetFontFamily().run();
-                      } else {
-                        // 특정 폰트로 설정
-                        editor.chain().setFontFamily(value).run();
-                      }
-
-                      // 즉시 UI 업데이트
-                      setTimeout(triggerUpdate, 0);
-                      setFontFamilyOpen(false);
-                    }}
-                  >
-                    <SelectTrigger className="h-9 text-sm border-border hover:border-border/80 focus:border-ring">
-                      <div className="flex items-center gap-2">
-                        <svg
-                          className="w-4 h-4 text-muted-foreground"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                        >
-                          <path d="M4 7c0-.932 0-1.398.152-1.765a2 2 0 0 1 1.083-1.083C5.602 4 6.068 4 7 4h10c.932 0 1.398 0 1.765.152a2 2 0 0 1 1.083 1.083C20 5.602 20 6.068 20 7M9 20h6M12 4v16" />
-                        </svg>
-                        <SelectValue placeholder="폰트 선택" />
-                      </div>
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="system-ui">기본</SelectItem>
-                      <SelectItem value="Pretendard">Pretendard</SelectItem>
-                      <SelectItem value="'NanumSquare Neo'">나눔스퀘어 네오</SelectItem>
-                      <SelectItem value="MaruBuri">마루 부리</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Font Size */}
-                <div className="flex flex-col gap-1.5 w-full md:w-22">
-                  <Select
-                    key={`font-size-${updateTrigger}`}
-                    value={getCurrentFontProperties().fontSize}
-                    open={fontSizeOpen}
-                    onOpenChange={setFontSizeOpen}
-                    onValueChange={(value) => {
-                      if (!editor) return;
-
-                      editor.chain().focus();
-
-                      if (value === "default") {
-                        // 기본 크기로 설정 (폰트 사이즈 제거)
-                        editor.chain().unsetFontSize().run();
-                      } else {
-                        // 특정 크기로 설정
-                        editor.chain().setFontSize(value).run();
-                      }
-
-                      // 즉시 UI 업데이트
-                      setTimeout(triggerUpdate, 0);
-                      setFontSizeOpen(false);
-                    }}
-                  >
-                    <SelectTrigger className="h-9 text-sm border-border hover:border-border/80 focus:border-ring">
-                      <SelectValue placeholder="크기 선택" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {FONT_SIZES.map((size) => (
-                        <SelectItem key={size} value={size}>
-                          {size}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              {/* Bottom Row - Format Controls */}
-              <div className="flex flex-wrap gap-0.5 md:flex-nowrap items-center">
-                {/* Text Formatting */}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().toggleBold().run()}
-                  className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                    editor?.isActive("bold") ? "bg-accent text-accent-foreground" : ""
-                  }`}
-                >
-                  <Bold className="w-5 h-5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().toggleItalic().run()}
-                  className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                    editor?.isActive("italic") ? "bg-accent text-accent-foreground" : ""
-                  }`}
-                >
-                  <Italic className="w-5 h-5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().toggleStrike().run()}
-                  className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                    editor?.isActive("strike") ? "bg-accent text-accent-foreground" : ""
-                  }`}
-                >
-                  <Strikethrough className="w-5 h-5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().toggleUnderline().run()}
-                  className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                    editor?.isActive("underline") ? "bg-accent text-accent-foreground" : ""
-                  }`}
-                >
-                  <UnderlineIcon className="w-5 h-5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().toggleHighlight().run()}
-                  className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                    editor?.isActive("highlight") ? "bg-accent text-accent-foreground" : ""
-                  }`}
-                >
-                  <Highlighter className="w-5 h-5" />
-                </Button>
-
-                {/* Separator */}
-                <div className="w-px h-6 bg-border mx-1" />
-
-                {/* Color Picker */}
-                <div className="relative" ref={colorPaletteRef}>
-                  <button
-                    type="button"
-                    onClick={() => setShowColorPalette(!showColorPalette)}
-                    className="flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted"
-                  >
-                    <div
-                      className="size-4 rounded-full border border-border bg-foreground"
-                      style={{ 
-                        backgroundColor: editor?.getAttributes("textStyle").color || undefined
-                      }}
-                    />
-                  </button>
-
-                  {showColorPalette && (
-                    <div className="absolute top-full left-0 mt-1 z-50 rounded-xl bg-background border border-border p-3 shadow-lg w-52 min-w-52">
-                      <div className="grid grid-cols-8 gap-1">
-                        {COLORS.map((color) => (
-                          <button
-                            key={color}
-                            type="button"
-                            onClick={() => {
-                              editor?.chain().focus().setColor(color).run();
-                              setShowColorPalette(false);
-                            }}
-                            className="p-0.5 hover:bg-muted rounded"
-                          >
-                            <div
-                              className={`size-4 cursor-pointer rounded-full ring-1 ring-black/10 ring-inset ${
-                                editor?.getAttributes("textStyle").color === color ? "outline-2 outline-offset-2" : ""
-                              }`}
-                              style={{
-                                backgroundColor: color,
-                                outlineColor: color,
-                              }}
-                            />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Separator */}
-                <div className="w-px h-6 bg-border mx-1" />
-
-                {/* Text Alignment */}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().setTextAlign("left").run()}
-                  className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                    editor?.isActive({ textAlign: "left" }) ? "bg-accent text-accent-foreground" : ""
-                  }`}
-                >
-                  <AlignLeft className="w-5 h-5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().setTextAlign("center").run()}
-                  className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                    editor?.isActive({ textAlign: "center" }) ? "bg-accent text-accent-foreground" : ""
-                  }`}
-                >
-                  <AlignCenter className="w-5 h-5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().setTextAlign("right").run()}
-                  className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                    editor?.isActive({ textAlign: "right" }) ? "bg-accent text-accent-foreground" : ""
-                  }`}
-                >
-                  <AlignRight className="w-5 h-5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => editor?.chain().focus().setTextAlign("justify").run()}
-                  className={`flex size-8 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-muted ${
-                    editor?.isActive({ textAlign: "justify" }) ? "bg-accent text-accent-foreground" : ""
-                  }`}
-                >
-                  <AlignJustify className="w-5 h-5" />
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          {/* Tiptap Editor */}
-          <div className="border rounded-lg p-4 min-h-[600px]">
-            <EditorContent
-              editor={editor}
-              className="prose prose-sm max-w-none focus:outline-none [&_.ProseMirror]:min-h-[560px] [&_.ProseMirror]:p-0 [&_.ProseMirror]:outline-none"
-            />
           </div>
         </div>
-      </div>
 
-      <div className="border-t bg-card p-4">
-        <div className="text-right text-accented-foreground space-y-1">
-          <div className="text-2xl font-bold tabular-nums">{byteCount.toLocaleString()} 바이트</div>
-          <div className="text-md tabular-nums">단어 {wordCount.words.toLocaleString()} 개</div>
-          <div className="text-md tabular-nums">공백 포함 {wordCount.charactersWithSpaces.toLocaleString()} 자</div>
-          <div className="text-md tabular-nums">공백 제외 {wordCount.charactersWithoutSpaces.toLocaleString()} 자</div>
+        <div className="border-t bg-card p-4">
+          <div className="text-right text-accented-foreground space-y-1">
+            <div className="text-2xl font-bold tabular-nums">{byteCount.toLocaleString()} 바이트</div>
+            <div className="text-md tabular-nums">단어 {wordCount.words.toLocaleString()} 개</div>
+            <div className="text-md tabular-nums">공백 포함 {wordCount.charactersWithSpaces.toLocaleString()} 자</div>
+            <div className="text-md tabular-nums">
+              공백 제외 {wordCount.charactersWithoutSpaces.toLocaleString()} 자
+            </div>
+          </div>
         </div>
       </div>
     </div>
