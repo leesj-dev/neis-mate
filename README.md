@@ -63,7 +63,7 @@ A comprehensive memo application built with React, Vite, TypeScript, TailwindCSS
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd nice-notes
+   cd neis-notes
    ```
 
 2. **Install dependencies**

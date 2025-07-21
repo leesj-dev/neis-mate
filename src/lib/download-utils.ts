@@ -130,7 +130,7 @@ export async function downloadAllMemos(memos: Memo[], folders: Folder[], mode: s
 
   const link = document.createElement("a");
   link.href = url;
-  link.download = "nice-notes-backup.zip";
+  link.download = "neis-notes-backup.zip";
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

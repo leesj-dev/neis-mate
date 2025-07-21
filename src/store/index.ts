@@ -472,7 +472,7 @@ export const useAppStore = create<AppState>()(
       },
     }),
     {
-      name: "nice-notes-storage",
+      name: "neis-notes-storage",
       partialize: (state) => ({
         user: state.user,
         memos: state.memos,

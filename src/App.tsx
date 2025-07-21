@@ -12,7 +12,7 @@ function App() {
 
   return (
     <GoogleOAuthProvider clientId={clientId}>
-      <ThemeProvider defaultTheme="system" storageKey="nice-notes-theme">
+      <ThemeProvider defaultTheme="system" storageKey="neis-notes-theme">
         <AppLayout />
       </ThemeProvider>
     </GoogleOAuthProvider>
